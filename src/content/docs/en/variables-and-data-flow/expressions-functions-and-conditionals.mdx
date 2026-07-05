@@ -1,0 +1,230 @@
+---
+title: 'Expressions, Functions, and Conditionals'
+description: 'Using built-in string, collection, numeric, and networking functions, testing expressions live with terraform console, choosing values with conditional expressions, and generating repeated nested blocks with dynamic.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Terraform's expression language ships with built-in functions for transforming values, a `terraform console` REPL for checking what an expression evaluates to before it goes anywhere near real infrastructure, conditional expressions for picking between two values, and `dynamic` blocks for generating a variable number of nested blocks inside a single resource.
+
+## Built-in functions: transforming and combining values
+
+Terraform's function library is organized loosely by the kind of value it operates on. String functions like `join` and `split` move between a list and a delimited string, and `format` builds a string from a template plus arguments. Collection functions like `lookup`, `merge`, and `contains` read from and combine maps and lists. Numeric functions cover the usual arithmetic and rounding needs. Networking functions like `cidrsubnet` are specific to carving address ranges, which comes up constantly when working with an Azure virtual network.
+
+```hcl
+variable "vnet_address_space" {
+  type        = string
+  description = "CIDR block for the virtual network"
+  default     = "10.0.0.0/16"
+}
+
+locals {
+  # cidrsubnet(prefix, newbits, netnum) carves a /16 into /24 subnets
+  subnet_web_cidr = cidrsubnet(var.vnet_address_space, 8, 0) # 10.0.0.0/24
+  subnet_app_cidr = cidrsubnet(var.vnet_address_space, 8, 1) # 10.0.1.0/24
+  subnet_db_cidr  = cidrsubnet(var.vnet_address_space, 8, 2) # 10.0.2.0/24
+
+  # format() builds a name from a template; join() flattens a list into a string
+  name_prefix   = format("%s-%s", var.environment, var.project)
+  dns_servers   = join(",", ["10.0.0.4", "10.0.0.5"])
+
+  # merge() combines maps, later arguments winning on key conflicts
+  vm_tags = merge(
+    { Project = var.project, Environment = var.environment },
+    { Tier = "web" },
+  )
+
+  # lookup() reads a map key with a fallback instead of erroring on a miss
+  region_short_name = lookup(
+    { eastus = "eus", eastus2 = "eus2", westeurope = "weu" },
+    var.location,
+    "unk",
+  )
+
+  # contains() checks membership without writing a for expression
+  is_allowed_region = contains(["eastus", "eastus2", "westeurope"], var.location)
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "${local.name_prefix}-vnet"
+  address_space       = [var.vnet_address_space]
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+}
+
+resource "azurerm_subnet" "web" {
+  name                 = "${local.name_prefix}-web-subnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [local.subnet_web_cidr]
+}
+```
+
+`cidrsubnet` is worth sitting with: it takes a base CIDR block, a number of additional bits to extend the prefix by, and a subnet number, and returns a new, non-overlapping CIDR block. `cidrsubnet("10.0.0.0/16", 8, 0)` extends the `/16` by 8 bits to a `/24` and picks the zeroth block, giving `10.0.0.0/24`; passing `1` for the third argument gives `10.0.1.0/24`, and so on. Computing three subnet ranges this way, once, in `locals`, means every `azurerm_subnet` resource references a named local instead of a hand-typed CIDR literal that someone has to double-check for overlaps.
+
+## terraform console: checking an expression before it goes into a resource
+
+`terraform console` opens an interactive REPL against the current configuration and state, without changing either. It is the fastest way to answer "what does this expression actually evaluate to" before pasting it into a resource argument where a typo is much more expensive to notice.
+
+```bash
+$ terraform console
+> join("-", ["dev", "payments", "web"])
+"dev-payments-web"
+> cidrsubnet("10.0.0.0/16", 8, 1)
+"10.0.1.0/24"
+> contains(["eastus", "eastus2", "westeurope"], "westeurope")
+true
+> var.vnet_address_space
+"10.0.0.0/16"
+> exit
+```
+
+Every line typed at the `>` prompt is evaluated once and printed, exactly like a plan-time expression would resolve, using the real values already in your variables and state. There is no `apply` step and no side effect — `exit` or Ctrl-D just closes the session. This is the tool to reach for whenever a `cidrsubnet` call or a `merge` of two maps does not look right in a `plan` diff and you want to isolate the exact expression before touching the resource block itself.
+
+## Conditional expressions: choosing between two values
+
+A conditional expression has three parts: a `condition` that must evaluate to `true` or `false`, a value to use when it is `true`, and a value to use when it is `false`, written as `condition ? true_val : false_val`. It is Terraform's only branching construct at the value level — there is no `if` statement, only an expression that resolves to one of two values.
+
+```hcl
+locals {
+  vm_size = var.environment == "prod" ? "Standard_D8s_v3" : "Standard_D2s_v3"
+
+  vm_tier_tag = upper(var.environment == "prod" ? "critical" : "standard")
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  name                = "${local.name_prefix}-web"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = local.vm_size
+  admin_username      = "azureuser"
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+
+  tags = {
+    Tier = local.vm_tier_tag
+  }
+}
+```
+
+`local.vm_size` picks a bigger virtual machine size only in `prod`, everywhere else falling back to a smaller default — a one-line replacement for what would otherwise be two nearly-identical `variable` defaults or a lookup table for a binary choice. `local.vm_tier_tag` chains a conditional straight into a function call: the conditional resolves to `"critical"` or `"standard"` first, and `upper()` then transforms whichever string won before it is assigned to the tag. Nesting like this is normal — a conditional is just an expression, and it can appear anywhere an expression is valid, including as an argument to another function.
+
+## dynamic blocks: a variable number of nested blocks inside one resource
+
+`count` and `for_each` on a resource (covered in the next lesson) decide how many copies of an entire resource to create. A `dynamic` block solves a related but distinct problem: generating a variable number of repeated *nested* blocks inside a single resource, driven by a collection. `azurerm_network_security_group` is a good example — it takes zero or more `security_rule` blocks, and the number of rules usually comes from a list the caller controls, not a fixed count known in advance.
+
+```hcl
+variable "allowed_ports" {
+  type        = list(number)
+  description = "TCP ports allowed inbound on the network security group"
+  default     = [22, 443, 8080]
+}
+
+resource "azurerm_network_security_group" "web" {
+  name                = "${local.name_prefix}-web-nsg"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+
+  dynamic "security_rule" {
+    for_each = var.allowed_ports
+
+    content {
+      name                       = "allow-port-${security_rule.value}"
+      priority                   = 100 + security_rule.key
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = tostring(security_rule.value)
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    }
+  }
+}
+```
+
+The `dynamic "security_rule"` block iterates `var.allowed_ports` and emits one `security_rule` nested block per element, without you writing out `security_rule { ... }` three separate times or updating the resource every time the port list changes. Inside `content`, `security_rule.value` is the current list element and `security_rule.key` is its index, both named after the block label by default. Add a fourth port to `allowed_ports` and a fourth `security_rule` block appears at the next `plan`, with no change to the resource block itself — this is the same convenience `count`/`for_each` bring at the whole-resource level, applied one level deeper, to a block that lives inside a single resource.
+
+<Mermaid title="A conditional and a function call resolve to one value used in a resource argument" code={expressionResolutionDiagramAzure} />
+
+export const expressionResolutionDiagramAzure = `flowchart LR
+  a["var.environment"] --> b{"conditional: environment == prod ?"}
+  b -->|true| c["critical"]
+  b -->|false| d["standard"]
+  c --> e["upper() function call"]
+  d --> e
+  e --> f["local.vm_tier_tag"]
+  f --> g["azurerm_linux_virtual_machine.web tags"]`;
+
+<Callout title="The one-line takeaway">
+Terraform's built-in **functions** transform and combine values without leaving the configuration language — string functions like `join`/`split`/`format`, collection functions like `lookup`/`merge`/`contains`, and networking functions like `cidrsubnet` for carving an Azure virtual network's address space into subnets. **`terraform console`** is an interactive REPL against the current configuration and state, the fastest way to check what an expression evaluates to before it goes into a resource argument. A **conditional expression** (`condition ? true_val : false_val`) is Terraform's only value-level branching construct, and it composes freely with function calls. A **`dynamic`** block generates a variable number of repeated *nested* blocks inside one resource from a collection — a different problem from `count`/`for_each` on a resource, which generate a variable number of whole resource instances, covered next.
+</Callout>
+
+export const quizExpressionsFunctionsAzure = [
+  {
+    q: 'What is terraform console used for',
+    options: [
+      'Applying configuration changes without writing a plan file',
+      'An interactive REPL for evaluating expressions and functions against the current configuration and state, without changing either',
+      'Formatting HCL files to the canonical style',
+      'Encrypting sensitive variables before they reach state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What are the three parts of a conditional expression written as condition ? true_val : false_val',
+    options: [
+      'A variable, a default, and a type constraint',
+      'A boolean condition, the value to use when it is true, and the value to use when it is false',
+      'A resource, a data source, and a provider',
+      'A function name, its arguments, and its return type',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'When should you reach for a dynamic block instead of count or for_each on the whole resource',
+    options: [
+      'When you need a variable number of whole resource instances, such as several virtual machines',
+      'When you need a variable number of repeated nested blocks inside a single resource, such as several security_rule blocks in one network security group',
+      'Never, dynamic blocks and count are fully interchangeable',
+      'Only when the resource has no other arguments at all',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does cidrsubnet(var.vnet_address_space, 8, 1) do',
+    options: [
+      'Deletes the first subnet from the virtual network',
+      'Extends the base CIDR prefix by 8 bits and returns the subnet block at index 1, without touching any real infrastructure',
+      'Creates a new virtual network resource in Azure',
+      'Merges two CIDR blocks into one larger range',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="variables-and-data-flow/expressions-functions-and-conditionals" questions={quizExpressionsFunctionsAzure} />
+
+<ProgressTracker client:visible id="variables-and-data-flow/expressions-functions-and-conditionals" />

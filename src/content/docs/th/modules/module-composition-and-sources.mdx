@@ -1,0 +1,182 @@
+---
+title: 'Module Composition and Sources'
+description: 'source argument กำหนดว่า module code มาจากไหน และ module ประกอบกันอย่างไรด้วยการต่อ output ตัวหนึ่งเข้ากับ input ของอีก module'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`source` argument บน `module` block บอก Terraform ว่าจะไปเอา code ของ module นั้นมาจากไหน และ infrastructure จริงที่ไม่ trivial ถูกสร้างขึ้นด้วยการประกอบ module เล็ก ๆ หลายตัวเข้าด้วยกัน — `output` ของ module หนึ่งถูกส่งตรงเข้าไปเป็น input variable ของอีก module
+
+## code ของ module มาจากไหน: source argument
+
+ทุก `module` block ต้องมี `source` และมีสามแบบหลักที่คุณจะเจอบ่อยมาก **local relative path** ชี้ไปที่ directory ภายใน repository ของคุณเอง **public Terraform Registry** resolve address สั้น ๆ แบบ `<namespace>/<name>/<provider>` ไปยัง module ที่ publish และมี version แล้ว **Git URL** ชี้ตรงไปที่ repository โดย pin ไปที่ tag, branch หรือ commit ที่ต้องการได้ด้วย `?ref=`
+
+```hcl
+# local relative path
+module "storage" {
+  source = "./modules/storage-account"
+}
+
+# public Terraform Registry
+module "vnet" {
+  source  = "Azure/vnet/azurerm"
+  version = "~> 5.0"
+}
+
+# Git URL pinned to a specific tag
+module "vnet_from_git" {
+  source = "git::https://github.com/acme/terraform-modules.git//vnet?ref=v1.4.0"
+}
+```
+
+ทั้งสามแบบเป็นแค่คำตอบต่างกันของคำถามเดียวกัน: Terraform ไปเอาไฟล์ `.tf` ของ child module นี้จากที่ไหน ไม่มีอะไรในวิธีที่คุณเขียน `variables.tf`, `main.tf` หรือ `outputs.tf` ภายใน module ที่ต้องเปลี่ยน ไม่ว่า caller จะใช้ `source` แบบไหน
+
+## ประกอบ module เข้าด้วยกัน: output หนึ่งกลายเป็น input ของอีกตัว
+
+configuration แบบ flat ตัวเดียวที่มี resource เป็นร้อยอ่านยากและเอาไปใช้ซ้ำไม่ได้เลย infrastructure จริงถูกสร้างจาก module เล็ก ๆ ที่ focus เฉพาะเรื่อง แล้วต่อกันผ่าน output และ input ของมัน module `vnet` expose identifier ที่ module อื่นต้องใช้:
+
+```hcl
+# modules/vnet/outputs.tf
+output "vnet_id" {
+  description = "ID of the created virtual network"
+  value       = azurerm_virtual_network.this.id
+}
+
+output "subnet_ids" {
+  description = "IDs of the subnets"
+  value       = azurerm_subnet.this[*].id
+}
+```
+
+module `virtual-machine` ประกาศ input ที่มันต้องใช้เพื่อ launch เข้าไปใน network นั้น:
+
+```hcl
+# modules/virtual-machine/variables.tf
+variable "vnet_id" {
+  description = "ID of the virtual network to launch the VM into"
+  type        = string
+}
+
+variable "subnet_id" {
+  description = "ID of the subnet to launch the VM into"
+  type        = string
+}
+```
+
+root configuration คือส่วนที่ต่อทั้งสอง module เข้าด้วยกันจริง ๆ โดยส่ง output ของ module หนึ่งตรงเข้าไปเป็น input ของอีก module:
+
+```hcl
+# root main.tf
+module "vnet" {
+  source        = "./modules/vnet"
+  address_space = "10.0.0.0/16"
+}
+
+module "web_server" {
+  source = "./modules/virtual-machine"
+
+  vnet_id   = module.vnet.vnet_id
+  subnet_id = module.vnet.subnet_ids[0]
+}
+```
+
+ไม่มี module ไหนต้องรู้ว่าอีกตัวมีอยู่ module `vnet` ไม่รู้เลยว่าจะมี module `virtual-machine` มา consume output ของมัน และ module `virtual-machine` ก็ไม่รู้ว่า `vnet_id` ของมันมาจาก module หรือเป็นแค่ string ที่ hardcode ไว้ root configuration คือจุดเดียวที่รู้จักทั้งสอง module และเชื่อมมันเข้าด้วยกัน
+
+## public Terraform Registry ในฐานะตัวช่วยเพิ่ม productivity
+
+pattern ที่พบบ่อยอย่าง "virtual network ที่มี public/private subnet" ถูกแก้ปัญหาไปแล้วหลายครั้ง public Terraform Registry มี community module ที่ maintain ดีและใช้กันแพร่หลาย — module ขององค์กร `Azure` เช่น `Azure/vnet/azurerm` และ `Azure/naming/azurerm` เป็นจุดเริ่มต้นที่พบบ่อยที่สุดสำหรับ Azure infrastructure — การหยิบ module พวกนี้มาใช้มักคุ้มเวลากว่าการเขียนของเทียบเท่าขึ้นมาเองตั้งแต่ต้น
+
+```hcl
+module "vnet" {
+  source  = "Azure/vnet/azurerm"
+  version = "~> 5.0"
+
+  resource_group_name = azurerm_resource_group.main.name
+  vnet_name           = "acme-app-vnet"
+  address_space       = ["10.0.0.0/16"]
+  subnet_prefixes     = ["10.0.1.0/24", "10.0.2.0/24"]
+  subnet_names        = ["private", "public"]
+}
+```
+
+ถึงอย่างนั้น "ใช้กันแพร่หลาย" ก็ไม่เหมือนกับ "เชื่อได้แบบไม่ต้องดู" ก่อนจะเอา Registry module มาสร้าง production infrastructure ควรอ่านก่อนว่ามันสร้างอะไรจริง ๆ — resource ของมัน default value ของมัน และ role assignment ใด ๆ ที่มัน provision ให้โดยอัตโนมัติ Registry module ก็ยังเป็น code ของคนอื่นที่รันด้วย credential ของ Azure ที่เป็นของคุณ
+
+<Mermaid title="A vnet module's outputs feeding a virtual-machine module's inputs from the root configuration" code={moduleCompositionDiagram} />
+
+export const moduleCompositionDiagram = `flowchart LR
+  subgraph root["Root configuration"]
+    vnetmod["module vnet"]
+    vmmod["module web_server"]
+  end
+  subgraph vnet["Child module: vnet"]
+    vnetout1["output vnet_id"]
+    vnetout2["output subnet_ids"]
+  end
+  subgraph vm["Child module: virtual-machine"]
+    vmin1["var.vnet_id"]
+    vmin2["var.subnet_id"]
+  end
+  vnetmod --> vnetout1
+  vnetmod --> vnetout2
+  vnetout1 -->|module.vnet.vnet_id| vmin1
+  vnetout2 -->|module.vnet.subnet_ids[0]| vmin2
+  vmin1 --> vmmod
+  vmin2 --> vmmod`;
+
+<Callout title="The one-line takeaway">
+`source` argument บอก Terraform ว่า code ของ module อยู่ที่ไหน — **local relative path**, public **Terraform Registry** หรือ **Git URL** ที่มี `?ref=` ระบุ version ที่ต้องการก็ได้ — และ infrastructure จริงถูกสร้างด้วยการ **compose** module เล็ก ๆ ที่ focus เฉพาะเรื่องเข้าด้วยกัน โดย `output` ของ module หนึ่งถูกส่งตรงเข้าไปเป็น input variable ของอีก module ภายใน root configuration ที่เป็นคนต่อมันเข้าด้วยกัน community module ของ public Registry ที่ maintain ดี อย่าง `Azure/vnet/azurerm` และ `Azure/naming/azurerm` มักเป็นจุดเริ่มต้นที่ดีกว่าการเขียน pattern ที่พบบ่อยขึ้นมาเอง แต่คุณก็ยังควรอ่านว่า Registry module สร้างอะไรจริง ๆ ก่อนจะเชื่อใน production
+</Callout>
+
+export const quizModuleComposition = [
+  {
+    q: 'บทเรียนนี้อธิบาย module source สามแบบไหนบ้าง',
+    options: [
+      'มีแค่ local relative path เท่านั้นที่เป็น module source ที่ใช้ได้',
+      'local relative path, public Terraform Registry และ Git URL ที่มี ref เป็น option',
+      'ใช้ได้เฉพาะ module ที่ publish บน public Terraform Registry เท่านั้น',
+      'Blob Storage URL, Docker image และ environment variable',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ในตัวอย่างการประกอบ vnet กับ virtual-machine module virtual-machine module ได้รับ subnet ที่ต้อง launch เข้าไปอย่างไร',
+    options: [
+      'virtual-machine module hardcode ค่า subnet_id ของตัวเองไว้ภายใน',
+      'root configuration ส่ง module.vnet.subnet_ids[0] เป็นค่าของ input subnet_id ใน virtual-machine module',
+      'Terraform อนุมาน subnet จาก region ของ AzureRM provider ให้อัตโนมัติ',
+      'module vnet เรียก virtual-machine module ตรง ๆ โดยไม่ผ่าน root configuration',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'module vnet ในตัวอย่างนี้ต้องรู้หรือไม่ว่าจะมี virtual-machine module มา consume output ของมัน',
+    options: [
+      'ต้องรู้ vnet module ต้อง import virtual-machine module เพื่อ expose output ที่เข้ากันได้',
+      'ไม่ต้องรู้ vnet module แค่ expose output ของตัวเอง และ root configuration คือจุดเดียวที่เชื่อมสอง module เข้าด้วยกัน',
+      'ต้องรู้ Terraform บังคับให้ module ประกาศว่า module ไหนจะ consume output ของมันได้บ้าง',
+      'ไม่ต้องรู้ เพราะ module composition ทำงานได้เฉพาะตอนที่ทั้งสอง module มาจาก source เดียวกัน',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'เมื่อไหร่ที่การหยิบ public Terraform Registry module มาใช้สมเหตุสมผลกว่าการเขียนเองตั้งแต่ต้น',
+    options: [
+      'ไม่มีเลย module ที่เขียนเองปลอดภัยกว่า Registry module เสมอ',
+      'ตลอดเวลา Registry module ไม่ต้องถูก review ก่อนใช้เลย',
+      'สำหรับ pattern ที่พบบ่อยและถูกแก้ปัญหาไปแล้ว เช่น vnet layout มาตรฐาน แต่คุณก็ยังควรอ่านว่า module สร้างอะไรก่อนจะเชื่อใน production',
+      'เฉพาะตอนที่ module source เป็น local relative path เท่านั้น',
+    ],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="modules/module-composition-and-sources" questions={quizModuleComposition} />
+
+<ProgressTracker client:visible id="modules/module-composition-and-sources" />

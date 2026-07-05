@@ -1,0 +1,191 @@
+---
+title: 'The Directory-per-Environment Pattern'
+description: 'How giving each environment its own directory, backend, and provider block delivers real isolation on Azure, and the new duplication problem it creates.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Instead of one shared configuration switching between workspaces, the directory-per-environment pattern gives dev, staging, and prod each their own real directory with their own backend and provider block, pointed at their own Azure resource group or even their own subscription, while all of them call the same shared module for the actual resources.
+
+## Real separation: one directory per environment
+
+The shape of the pattern is a set of thin environment directories next to one shared module:
+
+```bash
+tree environments modules
+environments
+├── dev
+│   ├── backend.tf
+│   └── main.tf
+├── staging
+│   ├── backend.tf
+│   └── main.tf
+└── prod
+    ├── backend.tf
+    └── main.tf
+modules
+└── app
+    ├── main.tf
+    ├── variables.tf
+    └── outputs.tf
+```
+
+`dev` and `staging` are the lighter case: separate **resource groups**, same subscription. `backend.tf` in each fixes its own state key and its own `subscription_id`:
+
+```hcl
+# environments/dev/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "dev.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+}
+```
+
+```hcl
+# environments/staging/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "staging.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+}
+```
+
+`prod` is the stronger case, reserved for the environment that genuinely needs hard separation: a different `subscription_id` entirely, so a mistake in `dev` or `staging` cannot even authenticate against prod's resources, let alone modify them.
+
+```hcl
+# environments/prod/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "prod.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "22222222-2222-2222-2222-222222222222"
+}
+```
+
+Each environment's `main.tf` calls the same shared module, differing only in the input values it passes:
+
+```hcl
+# environments/dev/main.tf
+module "app" {
+  source = "../../modules/app"
+
+  resource_group_name = "app-dev-rg"
+  location            = "eastus"
+  vm_size             = "Standard_B1s"
+  instance_count      = 1
+}
+```
+
+```hcl
+# environments/prod/main.tf
+module "app" {
+  source = "../../modules/app"
+
+  resource_group_name = "app-prod-rg"
+  location            = "eastus"
+  vm_size             = "Standard_D2s_v5"
+  instance_count      = 3
+}
+```
+
+## What this actually fixes
+
+This is real isolation, not the naming convention that a workspace gives you. `dev` and `staging` each land in their own **resource group**, so an accidental `terraform destroy` in one cannot reach resources living in the other's resource group, and each has its own RBAC scope. `prod` goes further and sits in its own **subscription**, which is Azure's harder boundary — separate billing, separate default quotas, and a genuinely different set of credentials required to touch it at all. Unlike workspaces, there is no shared `provider` block anywhere that could let a mistaken `terraform apply` reach across environments: the `dev` directory's Terraform run simply has no credential path to prod's subscription.
+
+## The duplication that comes back
+
+Look closely at the three `backend.tf` files above. They are identical in structure — same backend type, same state storage account, same container — differing in exactly two lines: the `key` and the `subscription_id`. The same is true of the `module "app"` block in every `main.tf`: the `source` argument is copy-pasted verbatim into every environment, and if that module ever moves, or gets pinned to a `version`, every environment directory needs the same edit applied by hand. This is the mirror image of the workspace problem. Workspaces solved duplication by sharing everything and isolating almost nothing; directory-per-environment solves isolation by separating everything, including the boilerplate that never actually needed to differ.
+
+<Mermaid title="Three separate environment directories give dev and staging their own resource group and prod its own subscription, but the backend, provider, and module source blocks are nearly identical copy-paste across all three" code={dirPerEnvDiagram} />
+
+export const dirPerEnvDiagram = `flowchart LR
+  devDir["environments/dev"] -->|same subscription, own resource group| subA["Subscription A"]
+  stagingDir["environments/staging"] -->|same subscription, own resource group| subA
+  prodDir["environments/prod"] -->|separate subscription| subB["Subscription B, prod only"]
+  devDir -->|module source = ../../modules/app| sharedModule["modules/app, shared"]
+  stagingDir -->|module source = ../../modules/app| sharedModule
+  prodDir -->|module source = ../../modules/app| sharedModule
+  devDir -.-> dup["backend.tf and provider block nearly identical in every environment"]
+  stagingDir -.-> dup
+  prodDir -.-> dup`;
+
+<Callout title="The one-line takeaway">
+The directory-per-environment pattern gives every environment a genuinely separate directory, backend, and provider block, letting dev and staging sit in their own Azure **resource group** and prod sit in its own, harder-boundary **subscription** for real blast-radius isolation, while all of them call the same shared **module** for the actual resources. The cost is that the backend configuration, the provider configuration, and the module's `source` argument end up duplicated nearly verbatim across every environment directory, reintroducing the exact copy-paste maintenance burden that this module opened with, just at a smaller scale.
+</Callout>
+
+export const quizDirPerEnv = [
+  {
+    q: 'What does the directory-per-environment pattern solve that Terraform workspaces do not',
+    options: [
+      'It removes the need for a Terraform state file entirely',
+      'Real isolation, since each environment gets its own backend, its own provider block, and can point at its own Azure resource group or even its own subscription',
+      'It automatically keeps every environment perfectly in sync',
+      'It eliminates the need for input variables',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which piece stays shared and DRY across environments in this pattern',
+    options: [
+      'The backend.tf file in each environment directory',
+      'The shared module that every environment directory calls for the actual resources',
+      'The subscription_id used by each environment',
+      'The state key used by each environment',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is still being duplicated across environment directories in this pattern despite solving isolation',
+    options: [
+      'The Azure region used by every environment',
+      'The backend configuration block, the provider configuration block, and the module source argument, repeated nearly verbatim in every environment directory',
+      'The actual resource definitions inside modules/app',
+      'The list of environments that exist',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In this pattern, what is the difference between how dev and staging are isolated versus how prod is isolated',
+    options: [
+      'There is no difference, all three use identical isolation',
+      'Dev and staging share a subscription but sit in separate resource groups, while prod sits in a fully separate subscription for a harder boundary',
+      'Dev and staging use separate subscriptions while prod shares a resource group with dev',
+      'Only prod uses a backend configuration at all',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/directory-per-environment-pattern" questions={quizDirPerEnv} />
+
+<ProgressTracker client:visible id="multi-environment/directory-per-environment-pattern" />

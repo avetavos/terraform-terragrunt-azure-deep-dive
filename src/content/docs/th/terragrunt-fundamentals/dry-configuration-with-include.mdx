@@ -1,0 +1,139 @@
+---
+title: 'DRY Configuration with include'
+description: 'วิธีที่ include block, find_in_parent_folders, read_terragrunt_config และ inputs ทำให้ unit สืบทอด configuration แทนที่จะเขียนซ้ำ'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## แนวคิดในหนึ่งประโยค
+
+`include` block ร่วมกับ `find_in_parent_folders()` ทำให้ unit ดึงทุกอย่างที่ shared config file กำหนดไว้มาใช้ได้เลย และ `locals` ร่วมกับ `read_terragrunt_config()` ก็ขยายแนวคิดเดียวกันนี้ไปยัง intermediate file ที่อยู่ระหว่าง root กับ unit ได้อีกกี่ชั้นก็ได้
+
+## include block: สืบทอด root.hcl โดยไม่ต้องเขียนซ้ำ
+
+บทก่อนหน้าแสดงให้เห็นว่า `root.hcl` ประกาศ `remote_state` และ provider `generate` block ไว้ครั้งเดียวที่ด้านบนสุดของ tree ส่วน unit จะเข้าถึงทั้งสองอย่างนี้ได้โดยไม่ต้อง copy บรรทัดใดเลย ผ่าน `include` block
+
+```hcl
+# vnet/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+```
+
+`find_in_parent_folders("root.hcl")` จะไต่ขึ้นไปตาม directory tree เริ่มจาก directory ของ unit นั้นเอง จนกว่าจะเจอไฟล์ชื่อ `root.hcl` ไม่ว่า unit จะอยู่ลึกแค่ไหนในเชิงชั้น เช่น แค่ชั้นเดียวใต้ root หรือลึกถึงห้าชั้น ฟังก์ชันนี้ก็จะไต่ขึ้นไปหาจนเจอ ทำให้การย้าย unit ไปอยู่ที่ระดับความลึกอื่นไม่ทำให้ reference พังไป ส่วน label ของ `include` block อย่าง `"root"` ในตัวอย่างนี้ คือชื่อที่ Terragrunt ใช้ track การ include นี้ภายใน unit หนึ่งสามารถมี `include` block ได้มากกว่าหนึ่งตัว แต่ละตัวมี label ของตัวเอง และชี้ไปยังไฟล์คนละไฟล์ได้
+
+เมื่อ include แล้ว ทุก block ที่ `root.hcl` กำหนดไว้ ไม่ว่าจะเป็น `remote_state`, provider `generate` block หรืออะไรก็ตามที่วางไว้ตรงนั้น จะทำงานเหมือนถูกเขียนอยู่ใน `terragrunt.hcl` ของ unit เองโดยตรง นี่คือกลไกทั้งหมด `include` block เพียงตัวเดียวแทนที่บรรทัดซ้ำนับสิบที่มิฉะนั้นต้องเขียนซ้ำในทุก unit ทั่วทั้ง tree
+
+## แชร์ config แบบละเอียดลงไปด้วย locals และ read_terragrunt_config
+
+`root.hcl` ไม่ใช่ที่เดียวที่ shared configuration จะอยู่ได้ tree ขนาดใหญ่มักมีชั้นกลางอีกชั้นด้วย เช่น ไฟล์ `subscription.hcl` หนึ่งไฟล์ต่อหนึ่ง Azure subscription วางอยู่เหนือทุก unit ที่อยู่ภายใต้ subscription นั้น เก็บค่าที่เจาะจงสำหรับ subscription นั้นโดยเฉพาะ
+
+```hcl
+# subscriptions/sub-networking/subscription.hcl
+locals {
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+  environment     = "networking"
+}
+```
+
+unit ที่อยู่ภายใต้ subscription นั้นอ่านไฟล์นี้ด้วย `read_terragrunt_config()` ห่อไว้ใน `locals` block ของตัวเอง
+
+```hcl
+# subscriptions/sub-networking/vnet/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+locals {
+  subscription_vars = read_terragrunt_config(find_in_parent_folders("subscription.hcl"))
+}
+
+inputs = {
+  subscription_id = local.subscription_vars.locals.subscription_id
+  address_space   = ["10.1.0.0/16"]
+  tags = {
+    environment = local.subscription_vars.locals.environment
+  }
+}
+```
+
+`read_terragrunt_config()` จะ parse ไฟล์ที่ส่งเข้าไป แล้วคืนค่าเป็น map ของทุกอย่างที่ประกาศไว้ในไฟล์นั้น ทำให้ `local.subscription_vars.locals.subscription_id` เข้าถึง `locals` block ของ `subscription.hcl` ได้โดยตรง สังเกตว่านี่เป็นกลไกคนละแบบกับ `include` โดย `include` จะสืบทอด block อย่าง `remote_state` มาทั้งหมด ในขณะที่ `read_terragrunt_config()` ให้ unit เข้าถึงค่าเฉพาะจุดจากไฟล์ที่เลือกจะอ่าน โดยไม่ต้องสืบทอดทั้งไฟล์ ความต่างนี้เองที่ทำให้มันเหมาะกับ intermediate file `root.hcl` ยังคง apply กับทุก unit ทั่วทั้ง tree ผ่าน `include` ส่วน `subscription.hcl` ก็แค่ต้องถูกอ่านโดย unit จำนวนหนึ่งที่อยู่ภายใต้ subscription นั้นจริง ๆ เท่านั้น
+
+## inputs: เทียบเท่ากับไฟล์ tfvars ใน Terragrunt
+
+ทุกตัวอย่างที่ผ่านมาจบด้วย `inputs` block ซึ่งสมควรได้รับคำอธิบายของตัวเอง ใน Terraform ธรรมดา คุณส่งค่า variable ให้ root module ผ่านไฟล์ `.tfvars` หรือ flag `-var` บน command line ส่วน `inputs` block ของ Terragrunt ก็ทำหน้าที่เดียวกัน เพียงแต่ค่าต่าง ๆ อยู่ใน HCL ของ unit เองโดยตรง แทนที่จะอยู่ในไฟล์แยกต่างหาก
+
+```hcl
+inputs = {
+  address_space = ["10.0.0.0/16"]
+  location      = "westeurope"
+}
+```
+
+ทุก key ใน `inputs` ต้องตรงกับ variable ที่ underlying Terraform module ประกาศไว้จริง Terragrunt จะส่งแต่ละค่าผ่านไปเหมือนถูกส่งด้วย `-var` เพราะ `inputs` เป็น HCL ธรรมดา มันจึง reference `locals`, ผลลัพธ์จาก `read_terragrunt_config()` หรือในบทถัดไปของ module นี้ คือ output ของ unit อื่นได้ ซึ่งไฟล์ `.tfvars` แบบ static ทำแบบนี้ไม่ได้เลย
+
+<Mermaid title="root.hcl, intermediate subscription.hcl และ unit ที่รวมทั้งสองระดับเข้าด้วยกัน" code={includeDiagram} />
+
+export const includeDiagram = `flowchart TD
+  root["root.hcl (remote_state, provider generate)"]
+  sub["subscription.hcl (locals: subscription_id, environment)"]
+  unit["vnet/terragrunt.hcl"]
+  root -->|include find_in_parent_folders root.hcl| unit
+  sub -->|read_terragrunt_config find_in_parent_folders subscription.hcl| unit
+  unit --> inputs["inputs = merge of root, subscription, and unit values"]`;
+
+<Callout title="สรุปในหนึ่งบรรทัด">
+`include "root" { path = find_in_parent_folders("root.hcl") } ` block สืบทอดทุก block ที่กำหนดไว้ใน shared root file มาทั้งหมด โดย unit ไม่ต้องเขียนซ้ำเลย และ `find_in_parent_folders()` จะไต่ directory tree ขึ้นไปจนเจอไฟล์นั้นไม่ว่า unit จะอยู่ลึกแค่ไหน **locals** block ร่วมกับ `read_terragrunt_config(find_in_parent_folders(...))` ขยายแนวคิดเดียวกันไปยัง intermediate file เช่น `subscription.hcl` ต่อหนึ่ง subscription ทำให้ unit เข้าถึงค่าเฉพาะจุดที่แชร์กันได้ โดยไม่ต้องสืบทอดทั้งไฟล์ ส่วน **inputs** block คือสิ่งที่เทียบเท่ากับไฟล์ `.tfvars` ใน Terragrunt ส่งค่าตรงเข้าไปยัง variable ของ underlying Terraform module และเพราะมันเป็น HCL ธรรมดา มันจึงรวมค่าจาก root, intermediate file และตัว unit เองเข้าด้วยกันในที่เดียวได้
+</Callout>
+
+export const quizIncludeAndDry = [
+  {
+    q: 'include block ร่วมกับ find_in_parent_folders ทำหน้าที่อะไร',
+    options: [
+      'copy เนื้อหาของไฟล์ที่ระบุไปสร้างไฟล์ใหม่บน disk',
+      'ไต่ directory tree ขึ้นไปหาไฟล์ที่ระบุ แล้วสืบทอดทุก block ที่ไฟล์นั้นกำหนดไว้ โดย unit ไม่ต้องเขียนซ้ำ',
+      'ลบไฟล์ที่ระบุทิ้งหลังจากอ่านเสร็จ',
+      'ใช้ได้เฉพาะเมื่อไฟล์ที่ระบุอยู่เหนือ unit ขึ้นไปแค่หนึ่งชั้นเท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'read_terragrunt_config ใช้ทำอะไรกับ intermediate file อย่าง subscription.hcl',
+    options: [
+      'แทนที่ include block ไปเลยทั้งหมด',
+      'ให้ unit เข้าถึงค่าเฉพาะจุดจากไฟล์ที่เลือกจะอ่าน โดยไม่ต้องสืบทอดทั้งไฟล์แบบที่ include ทำ',
+      'สร้าง Terraform provider block ใหม่ให้อัตโนมัติ',
+      'ใช้ได้กับไฟล์ที่ชื่อ root.hcl เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'inputs block ใน terragrunt.hcl ของ unit เทียบเท่ากับอะไร',
+    options: [
+      'Terraform backend configuration',
+      'ไฟล์ tfvars หรือ flag -var ที่ส่งค่าเข้าไปยัง variable ของ underlying Terraform module',
+      'remote_state block',
+      'Terraform provider block',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม tree หนึ่งจึงอาจใช้ intermediate subscription.hcl เพิ่มเติมจาก root.hcl',
+    options: [
+      'เพราะ root.hcl อ่านได้ทีละ unit เท่านั้น',
+      'เพราะบางค่าใช้ได้เฉพาะกับ unit ที่อยู่ภายใต้ subscription หนึ่งเท่านั้น ไม่ใช่ทุก unit ทั่วทั้ง tree',
+      'เพราะ include block ใส่ label ซ้ำกันไม่ได้',
+      'เพราะ Terragrunt บังคับให้ต้องมี parent config อย่างน้อยสองชั้นเสมอ',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="terragrunt-fundamentals/dry-configuration-with-include" questions={quizIncludeAndDry} />
+
+<ProgressTracker client:visible id="terragrunt-fundamentals/dry-configuration-with-include" />

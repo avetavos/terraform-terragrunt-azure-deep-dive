@@ -1,0 +1,125 @@
+---
+title: 'Dependencies Between Units'
+description: 'วิธีที่ dependency block ทำให้ unit หนึ่งใช้ output ของอีก unit ข้าม state boundary ได้ และ mock_outputs มีไว้ทำอะไร'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## แนวคิดในหนึ่งประโยค
+
+`dependency` block ทำให้ unit หนึ่งอ่าน output ของอีก unit ข้าม state boundary ที่แยกทั้งสองออกจากกันได้ โดย `mock_outputs` ทำหน้าที่แทนค่าจริงไปก่อน จนกว่า unit อีกฝั่งจะถูก apply จริง
+
+## ทำไม module composition อย่างเดียวไม่พออีกต่อไป
+
+โมดูล Modules ก่อนหน้านี้แสดงให้เห็นว่า output ของ module หนึ่งไหลตรงเข้าไปเป็น input ของอีก module ได้ ทั้งหมดอยู่ใน `main.tf` เดียว ถูก resolve โดย Terraform ใน `plan` เดียวกัน กับ state ที่แชร์กันชุดเดียว วิธีนี้ทำงานได้เพราะทั้งสอง module เป็นส่วนหนึ่งของ Terraform run เดียวกัน Terraform จึงเห็น dependency graph ทั้งหมดในครั้งเดียว
+
+unit ตั้งใจทำลายสมมติฐานนั้น unit `vnet` และ unit `vm` ต่างมี `terragrunt.hcl` และ state file แยกกันของตัวเอง apply แยกกันอย่างอิสระ unit `vm` ยังต้องการ subnet ID ที่ `vnet` สร้างขึ้นอยู่ดี แต่ไม่มี Terraform run เดียวที่เห็นทั้งสอง unit นี้อีกต่อไป จากมุมมองของ Terraform ทั้งสอง unit เป็นโปรเจกต์คนละเรื่องกันโดยสิ้นเชิง Terragrunt จึงต้องมีกลไกของตัวเองสำหรับส่งค่าจาก state ของ unit หนึ่ง ข้าม boundary นั้นเข้าไปใน `inputs` ของอีก unit และกลไกนั้นคือ `dependency` block
+
+## dependency block: ข้าม state boundary
+
+`dependency` block ระบุชื่อ unit อื่นด้วย directory ของมัน แล้ว expose ทุก output ของ unit นั้นออกมา
+
+```hcl
+# vm/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+dependency "vnet" {
+  config_path = "../vnet"
+}
+
+inputs = {
+  subnet_id = dependency.vnet.outputs.subnet_id
+}
+```
+
+`config_path = "../vnet"` ชี้ไปที่ directory ของ unit `vnet` เบื้องหลัง Terragrunt จะรัน `terragrunt output` กับ unit นั้น แล้ว expose ผลลัพธ์ออกมาภายใต้ `dependency.vnet.outputs` ทำให้ `dependency.vnet.outputs.subnet_id` เข้าถึงสิ่งที่ Terraform module ของ unit `vnet` ประกาศไว้เป็น `output "subnet_id"` ได้โดยตรง จาก `terragrunt.hcl` ของ unit `vm` เอง โค้ดตรงนี้อ่านได้เกือบเหมือนกับการใช้ output ของ module ภายใน `main.tf` เดียวกันเลย ความต่างมองไม่เห็นในตัว syntax แม้ว่าจริง ๆ แล้วมี `apply` และ state file แยกกันโดยสิ้นเชิงอยู่เบื้องหลัง `dependency.vnet.outputs`
+
+## mock_outputs: ให้ plan สำเร็จได้ก่อนเวลา
+
+มีปัญหาชัดเจนอยู่ในโครงสร้างข้างต้น ครั้งแรกที่ใครก็ตามรัน `terragrunt plan` กับ unit `vm` unit `vnet` อาจจะยังไม่ถูก apply เลยก็ได้ ทำให้ `dependency.vnet.outputs.subnet_id` ไม่มีค่าจริงให้อ่าน `mock_outputs` แก้ปัญหานี้ได้พอดี
+
+```hcl
+dependency "vnet" {
+  config_path = "../vnet"
+
+  mock_outputs = {
+    subnet_id = "mock-subnet-id"
+  }
+
+  mock_outputs_allowed_terraform_commands = ["plan"]
+}
+```
+
+เมื่อ output จริงยังไม่พร้อมใช้งาน Terragrunt จะแทนที่ด้วยค่าใน `mock_outputs` แทนการ fail ไปเลย ทำให้ `plan` แสดงสิ่งที่ unit `vm` จะสร้างได้ แม้ว่า `vnet` จะยังไม่มีอยู่จริงก็ตาม `mock_outputs_allowed_terraform_commands` จำกัดว่า command ไหนบ้างที่อนุญาตให้ fallback ไปใช้ mock ได้ การระบุแค่ `plan` ในตัวอย่างนี้ หมายความว่า `apply` ยัง fail อย่างชัดเจนถ้า dependency จริงยังไม่ถูก apply ซึ่งเป็น safety net ที่ต้องการพอดี การ preview plan กับ subnet ID ปลอมนั้นไม่มีปัญหา แต่การสร้าง virtual machine จริงกับค่าปลอมนั้นไม่ควรเกิดขึ้นเด็ดขาด
+
+## ลำดับการ apply ถูกคำนวณอัตโนมัติ
+
+ไม่มีตรงไหนใน `terragrunt.hcl` ของ unit `vm` ที่บอกว่า "apply `vnet` ก่อน" Terragrunt คำนวณเรื่องนี้ให้เองทั้งหมด ทุก `dependency` block ที่มันเจอระหว่างสแกน tree ของ unit ต่าง ๆ จะกลายเป็น edge หนึ่งใน dependency graph และเมื่อรัน operation ข้าม unit หลายตัวพร้อมกัน Terragrunt จะใช้ graph นั้นเป็นเงื่อนไขลำดับ `vnet` รับประกันว่าจะ apply เสร็จก่อนที่ `vm` จะเริ่ม เพราะ `vm` ประกาศ `dependency` ไปยังมัน ไม่ต้อง hard-code ลำดับนี้หรือจำเพื่อรัน command ตามลำดับที่ถูกต้องด้วยมือเลย บทถัดไปจะพูดถึง command ที่ใช้ trigger การรันข้ามหลาย unit จริง ๆ
+
+<Mermaid title="output ของ vnet ไหลเข้า vm ผ่าน dependency block โดย mock_outputs เชื่อมช่องว่างก่อน vnet จะถูก apply" code={dependencyDiagram} />
+
+export const dependencyDiagram = `flowchart LR
+  vnetunit["vnet unit (own state)"]
+  vnetout["outputs.subnet_id"]
+  dep["vm/terragrunt.hcl dependency vnet"]
+  vminputs["vm inputs.subnet_id"]
+  vnetunit --> vnetout --> dep --> vminputs
+  mock["mock_outputs (plan only, before vnet is applied)"] -.-> dep`;
+
+<Callout title="สรุปในหนึ่งบรรทัด">
+`dependency` block เช่น `dependency "vnet" { config_path = "../vnet" }` คือวิธีที่ unit หนึ่งข้าม state boundary ที่แยกจากกัน ซึ่ง module composition ธรรมดาข้ามไม่ได้ โดย expose output ของอีก unit ออกมาเป็น `dependency.vnet.outputs.subnet_id` ให้ใช้ใน `inputs` block ของ unit ที่บริโภคมันได้ **mock_outputs** ที่ถูกจำกัดด้วย `mock_outputs_allowed_terraform_commands` ให้เฉพาะ command บางตัว ทำให้ `plan` สำเร็จด้วยค่าจำลองได้ แม้ dependency จะยังไม่ถูก apply จริง ในขณะที่ยังปฏิเสธการแทนค่า mock สำหรับ `apply` จริงอยู่ดี Terragrunt สร้าง dependency graph จากทุก `dependency` block ที่พบทั่วทั้ง tree ของ unit แล้วใช้ graph นั้นคำนวณลำดับ apply ที่ถูกต้องโดยอัตโนมัติ ทำให้ unit ที่พึ่งพา unit อื่นถูก apply ทีหลังเสมอ โดยไม่ต้องมีใคร hard-code ลำดับนั้นเอง
+</Callout>
+
+export const quizDependencies = [
+  {
+    q: 'ทำไม module composition จาก main.tf เดียวถึงไม่พอ เมื่อ vnet กับ vm กลายเป็น Terragrunt unit แยกกัน',
+    options: [
+      'เพราะ Terraform output ถูกลบทิ้งทันทีที่ unit หนึ่งใช้ Terragrunt',
+      'เพราะแต่ละ unit มี state แยกกัน จึงไม่มี Terraform run เดียวที่เห็นทั้งสอง unit และ dependency block คือสิ่งที่ปิดช่องว่างนั้น',
+      'เพราะ Terragrunt unit ใช้ Terraform output ไม่ได้เลย',
+      'เพราะ inputs block reference variable ไม่ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'mock_outputs ให้ unit ทำอะไรได้',
+    options: [
+      'ข้ามการรัน plan หรือ apply ไปเลยทั้งหมด',
+      'ให้ plan สำเร็จด้วยค่าจำลองได้ แม้ dependency จริงยังไม่ถูก apply โดยมักจะจำกัดไว้เฉพาะบาง command',
+      'แทนที่ output จริงของ unit ที่เป็น dependency อย่างถาวร',
+      'ลบ dependency block ทิ้งหลังใช้งานครั้งแรก',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Terragrunt กำหนดลำดับ apply ที่ถูกต้องข้ามหลาย unit ที่พึ่งพากันได้อย่างไร',
+    options: [
+      'ใช้ลำดับตามชื่อ directory เรียงตามตัวอักษรบน disk',
+      'สร้าง dependency graph จากทุก dependency block ที่พบข้าม unit ต่าง ๆ แล้วใช้ graph นั้นเป็นเงื่อนไขลำดับ',
+      'apply unit ตามลำดับวันที่สร้าง directory เสมอ',
+      'ผู้ใช้ต้องระบุลำดับด้วย flag ทุกครั้งที่รันเอง',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน dependency "vnet" { config_path = "../vnet" } นั้น config_path ชี้ไปที่อะไร',
+    options: [
+      'ไฟล์ configuration ของ Terraform provider',
+      'directory ของ Terragrunt unit อีกตัวที่ output ของมันจะถูก expose ให้ unit นี้ใช้',
+      'configuration ของ remote_state backend',
+      'hook script ที่รันก่อน apply',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="terragrunt-fundamentals/dependencies-between-units" questions={quizDependencies} />
+
+<ProgressTracker client:visible id="terragrunt-fundamentals/dependencies-between-units" />

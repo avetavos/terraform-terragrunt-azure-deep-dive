@@ -1,0 +1,161 @@
+---
+title: 'Terraform Workspaces'
+description: 'How Terraform workspaces let one configuration manage multiple named states, and why that convenience does not give you real environment isolation.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A Terraform workspace lets one configuration keep several separate state files, each under its own name, which is a cheap way to model dev, staging, and prod, but a workspace changes nothing about the backend, the provider, or the Azure subscription that configuration actually talks to.
+
+## One configuration, many state files
+
+`terraform workspace` is a built-in command family for managing named state inside a single working directory. You create one workspace per environment, and Terraform keeps a completely separate state file for each:
+
+```bash
+terraform workspace new dev
+terraform workspace new staging
+terraform workspace new prod
+
+terraform workspace list
+#   dev
+#   staging
+# * prod
+
+terraform workspace select dev
+```
+
+The active workspace is just a pointer: whichever one is selected determines which state file the next `plan` or `apply` reads and writes. With the default local backend, Terraform stores this under `terraform.tfstate.d`, one subdirectory per workspace:
+
+```bash
+tree terraform.tfstate.d
+terraform.tfstate.d
+├── dev
+│   └── terraform.tfstate
+├── staging
+│   └── terraform.tfstate
+└── prod
+    └── terraform.tfstate
+```
+
+With a remote backend such as `azurerm`, the same idea applies — Terraform namespaces the state blob per workspace instead of per local directory — but the effect is identical: `dev` cannot see or overwrite `prod`'s resources, because they live in entirely separate state.
+
+## Varying behavior with terraform.workspace
+
+Terraform exposes the name of the currently selected workspace as a built-in value, `terraform.workspace`, which you can interpolate anywhere a string is expected. The most common use is picking a size or a name per environment out of a lookup map:
+
+```hcl
+locals {
+  vm_size = {
+    dev     = "Standard_B1s"
+    staging = "Standard_B2s"
+    prod    = "Standard_D2s_v5"
+  }
+}
+
+resource "azurerm_linux_virtual_machine" "app" {
+  name                = "app-${terraform.workspace}"
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  size                = local.vm_size[terraform.workspace]
+
+  admin_username = "azureuser"
+  # ...
+}
+```
+
+Select `dev` and the VM is named `app-dev` and sized `Standard_B1s`. Select `prod` and the same `.tf` file produces `app-prod` sized `Standard_D2s_v5`, with no code duplicated anywhere. This is the appeal of workspaces: one set of `.tf` files, one place to fix a bug, and per-environment variation driven entirely by which workspace happens to be active.
+
+## What a workspace does not isolate
+
+Here is the part that is easy to miss. `terraform workspace new` only ever creates a new state file. It does not create a new backend configuration, a new provider configuration, or a new Azure subscription. All of that lives in the same `.tf` code, shared verbatim across every workspace:
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "app.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Every workspace — `dev`, `staging`, and `prod` alike — reads and writes through that one `backend` block and authenticates through that one `provider` block, against that one `subscription_id`. There is no workspace-scoped credential, no workspace-scoped subscription, and no workspace-scoped copy of the `.tf` code. The only thing that differs between workspaces is which state file gets touched and whatever you chose to key off `terraform.workspace`.
+
+That makes workspaces a poor fit for environments that need genuinely separate Azure subscriptions, regions, or credentials, and it creates a specific, real risk: nothing in the tooling stops someone from being on the `prod` workspace while believing they are still on `dev`, and applying a change sized and scoped for a toy environment directly against production, because the backend, the provider, and the subscription behind the scenes never changed at all.
+
+<Mermaid title="One Terraform config and one backend, three workspaces, three state files, but everything else shared including the Azure subscription" code={workspaceDiagram} />
+
+export const workspaceDiagram = `flowchart LR
+  config["One Terraform config, one backend block"] -->|terraform workspace new dev| devWs["dev workspace"]
+  config -->|terraform workspace new staging| stagingWs["staging workspace"]
+  config -->|terraform workspace new prod| prodWs["prod workspace"]
+  devWs --> devState["dev state file"]
+  stagingWs --> stagingState["staging state file"]
+  prodWs --> prodState["prod state file"]
+  devWs -.-> shared["Same subscription_id, same backend, same .tf code"]
+  stagingWs -.-> shared
+  prodWs -.-> shared`;
+
+<Callout title="The one-line takeaway">
+A Terraform **workspace** gives every named environment its own separate **state file** from one shared set of `.tf` files, and `terraform.workspace` lets you cheaply vary names, sizes, and tags per environment — but a workspace shares the exact same **backend**, **provider**, and Azure **subscription_id** across every workspace, so it solves DRY reuse well while leaving isolation weak, and the real risk is applying a change meant for one environment while sitting, unnoticed, on the wrong workspace.
+</Callout>
+
+export const quizWorkspaces = [
+  {
+    q: 'What does creating a new Terraform workspace actually isolate from other workspaces',
+    options: [
+      'A separate Azure subscription for that workspace',
+      'A separate state file, while the backend configuration, provider configuration, and .tf code stay shared',
+      'A separate copy of the .tf source files',
+      'A separate set of Azure credentials',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which of these is shared identically across every workspace in the same configuration',
+    options: [
+      'The state file',
+      'The backend configuration, the provider configuration, and the subscription_id',
+      'The value returned by terraform.workspace',
+      'The list of resources currently selected',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is terraform.workspace typically used for',
+    options: [
+      'Switching which Azure subscription_id the provider block authenticates against',
+      'Interpolating the active workspace name into resource names, tags, or a lookup map to vary sizing per environment',
+      'Selecting which backend type Terraform uses to store state',
+      'Generating a new provider block for each environment',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the specific real-world risk that Terraform workspaces introduce',
+    options: [
+      'Workspaces cannot be renamed once created',
+      'Nothing stops someone from being on the wrong workspace and applying a prod-sized change while believing they are still in dev, since the backend, provider, and subscription never change',
+      'Workspaces require a paid Terraform Cloud plan to use',
+      'Workspace state files cannot be stored remotely',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/terraform-workspaces" questions={quizWorkspaces} />
+
+<ProgressTracker client:visible id="multi-environment/terraform-workspaces" />

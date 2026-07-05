@@ -1,0 +1,181 @@
+---
+title: 'Outputs and Locals'
+description: 'เปิดเผยค่าด้วย output block หลัง apply mark output ให้เป็น sensitive และใช้ locals คำนวณ expression ที่มีชื่อครั้งเดียวแล้วใช้ซ้ำทั่ว configuration'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+`local` คือ expression ที่มีชื่อ คำนวณครั้งเดียวแล้วนำกลับมาใช้ซ้ำภายใน configuration ส่วน `output` จะดึงค่าออกจาก configuration ไปให้มองเห็นได้หลัง `apply` — รวมกับ `variable` แล้วทั้งสามคือ named value สามชนิดที่แตกต่างกันใน Terraform
+
+## Locals: คำนวณค่าครั้งเดียวแล้วใช้ซ้ำ
+
+`variable` ถูกตั้งค่าโดยคนที่เรียกใช้ configuration และ `output` ถูกเปิดเผยให้คนที่นำไปใช้ต่อ ส่วน `local` ไม่ใช่ทั้งสองอย่างนั้น มันเป็นแค่ความสะดวกภายใน เป็นชื่อที่ตั้งให้กับ expression เพื่อไม่ต้องเขียน expression เดิมซ้ำทุกครั้งที่ต้องใช้ผลลัพธ์ของมัน ไม่มีใครนอก configuration ตั้งค่า `local` ได้ และไม่มีใครนอก configuration อ่านมันได้โดยตรงเช่นกัน
+
+```hcl
+locals {
+  name_prefix = "${var.environment}-${var.project}"
+
+  common_tags = {
+    Project     = var.project
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+
+  vm_count = var.environment == "prod" ? 5 : 2
+
+  # Azure Storage Account names must be 3-24 characters, lowercase letters and numbers only
+  storage_account_name = lower(replace("${local.name_prefix}appdata", "-", ""))
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  count = local.vm_count
+
+  name                = "${local.name_prefix}-web-${count.index}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_D2s_v3"
+  admin_username      = "azureuser"
+  network_interface_ids = [
+    azurerm_network_interface.web[count.index].id,
+  ]
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-web-${count.index}"
+  })
+}
+
+resource "azurerm_storage_account" "app_data" {
+  name                     = local.storage_account_name
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  tags                     = local.common_tags
+}
+```
+
+`local.common_tags` ถูกคำนวณครั้งเดียวจาก `var.project` กับ `var.environment` แล้วถูกอ้างอิงทั้งจาก `azurerm_linux_virtual_machine.web` และ `azurerm_storage_account.app_data` ถ้าไม่มี local ตัวนี้ key-value สามคู่เดิมต้องถูก copy ไปทุก resource block ที่ต้องใช้ และถ้าวันหลังต้องเปลี่ยน tagging scheme ก็ต้องไล่หาทุก copy เอง `local.vm_count` ทำหน้าที่คล้ายกันกับ conditional เล็ก ๆ การตัดสินใจ "prod ใช้ 5 ที่อื่นใช้ 2" ถูกเขียนครั้งเดียวแล้วอ้างอิงด้วยชื่อทุกที่ที่ต้องใช้ `local.storage_account_name` ยิ่งเห็นประโยชน์ชัดกว่านั้นอีก — ชื่อ Azure Storage Account ต้องมีความยาว 3 ถึง 24 ตัวอักษร เป็นตัวพิมพ์เล็กกับตัวเลขเท่านั้น ห้ามมีขีดกลาง ดังนั้น expression นี้ตัดขีดกลางออกจาก `name_prefix` ครั้งเดียวในที่เดียว แทนที่ทุก resource ที่ต้องใช้ชื่อ storage account ที่ถูกต้องจะต้องเรียก `lower(replace(...))` ซ้ำเอง `local` ไม่เคยถูก assign โดย caller และไม่ปรากฏใน `terraform plan` เป็นอะไรที่ override ได้ — มันคือแค่ชื่อของค่าที่คำนวณไว้ภายใน configuration นี้เท่านั้น
+
+## Outputs: เปิดเผยค่าหลัง apply
+
+`output` block ดึงค่าที่มีอยู่ภายใน configuration — ส่วนใหญ่คือ attribute ของ resource ที่รู้ค่าจริงได้ก็ต่อเมื่อ `apply` เสร็จแล้ว — แล้วทำให้ค่านั้นใช้งานได้จากภายนอก configuration `description` ไว้บอกความหมายของค่า และ `sensitive = true` ซ่อนค่าจาก CLI output ปกติเหมือนที่ทำกับ `variable`
+
+```hcl
+output "web_vm_ids" {
+  description = "IDs of the virtual machines created for the web tier"
+  value       = azurerm_linux_virtual_machine.web[*].id
+}
+
+output "app_data_storage_account_id" {
+  description = "Resource ID of the storage account used for application data"
+  value       = azurerm_storage_account.app_data.id
+}
+
+output "sql_admin_password" {
+  description = "Administrator login password generated for the Azure SQL server"
+  value       = azurerm_mssql_server.main.administrator_login_password
+  sensitive   = true
+}
+```
+
+```bash
+# List every output and its value
+terraform output
+
+# Print one output's value, unquoted for scripting
+terraform output web_vm_ids
+
+# Machine-readable output, for piping into jq or another tool
+terraform output -json app_data_storage_account_id
+```
+
+`terraform output` เฉย ๆ จะ print output ทุกตัวที่ประกาศไว้หลัง `apply` ล่าสุด `terraform output <name>` print แค่ตัวเดียว และ `terraform output -json` แสดงค่า (หรือทุกค่าถ้าไม่ระบุชื่อ) เป็น JSON ซึ่งเป็นสิ่งที่ต้องการเวลา CI pipeline หรือ script อื่นต้องเอาผลลัพธ์ไปใช้ต่อแบบ programmatic ไม่ใช่ให้คนอ่านเฉย ๆ `sensitive = true` บน `sql_admin_password` ทำงานเหมือนกับตอนอยู่บน variable ทุกอย่าง Terraform จะ print `(sensitive value)` ใน output ของ `plan`/`apply` และใน `terraform output` เปล่า ๆ แต่ `terraform output sql_admin_password` ยังคง print ค่าจริงถ้าเรียกชื่อตรง ๆ และค่านั้นยังถูกเก็บเป็น plain text ใน state เหมือนเดิม มันคือการป้องกันตอนแสดงผลบน terminal กับ log ไม่ใช่ access control
+
+## Outputs คือกลไกของการต่อยอด (composition)
+
+ภายใน root configuration เดียว `output` ส่วนใหญ่เป็นแค่ข้อมูล — เป็นวิธีที่สะดวกในการโชว์ค่าให้คนที่รัน `terraform apply` เห็นเฉย ๆ ความสำคัญจริง ๆ ของมันจะเห็นชัดก็ต่อเมื่อ configuration ไม่ได้เป็นสิ่งเดียวโดด ๆ อีกต่อไป เวลาแยก infrastructure ออกเป็น module, module ไม่มีทางอื่นเลยที่จะส่งค่าที่คำนวณแล้วกลับไปให้คนที่เรียกมันนอกจากผ่าน `output` block — module เรื่อง Modules ในคอร์สนี้จะพูดถึงการอ้างอิง `module.<name>.<output>` แบบละเอียดต่อไป เวลาแยก infrastructure ออกเป็น Terragrunt unit ที่ deploy แยกกันแทน `dependency` block จะอ่าน output ของอีก unit หนึ่งเพื่อเชื่อม unit เข้าด้วยกันโดยไม่ต้อง hard-code ค่าใด ๆ ระหว่างกันเลย — pattern นี้จะถูกพูดถึงอีกครั้งใน module ของ Terragrunt ทีหลัง ทั้งสองกรณีใช้กลไกเดียวกับที่เห็นตรงนี้ ค่าหนึ่งรู้ค่าจริงภายใน configuration หนึ่ง `output` block เปิดเผยมันออกมา แล้วสิ่งอื่น — parent module หรือ dependent unit — นำไปใช้ต่อ
+
+<Mermaid title="Multiple value sources resolve to one value per variable, by precedence" code={localsOutputsDiagramAzure} />
+
+export const localsOutputsDiagramAzure = `flowchart LR
+  ve["var.environment"] --> lp["local.name_prefix"]
+  vp["var.project"] --> lp
+  lp --> ri["azurerm_linux_virtual_machine.web"]
+  lp --> rb["azurerm_storage_account.app_data"]
+  rb --> ob["output app_data_storage_account_id"]
+  ob --> dep["dependency block or module output reference"]`;
+
+<Callout title="The one-line takeaway">
+**`local`** คือ expression ที่มีชื่อ คำนวณครั้งเดียวภายใน configuration แล้วใช้ซ้ำได้ทุกที่ที่ต้องการผลลัพธ์ — ไม่มีใครนอก configuration ตั้งค่าหรืออ่านมันได้โดยตรง ทำให้มันต่างจากทั้ง **`variable`** ที่ caller ตั้งค่าให้ และ **`output`** ที่มองเห็นได้จากภายนอก **`output`** block เปิดเผยค่าหลัง `apply` อ่านได้ด้วย `terraform output`, `terraform output <name>` หรืออ่านแบบ machine-readable ผ่าน `terraform output -json` `sensitive = true` ซ่อนมันจาก CLI output ปกติเหมือนกับ variable โดยไม่ได้ลบมันออกจาก **state** นอกเหนือจาก root configuration เดียว output คือสิ่งที่ทำให้ composition เป็นไปได้ — มันคือวิธีที่ module ส่งค่ากลับไปให้ caller และวิธีที่ `dependency` block ใน Terragrunt อ่านค่าจาก unit หนึ่งที่ deploy แยกกันไปยังอีก unit หนึ่ง
+</Callout>
+
+export const quizOutputsAndLocalsAzure = [
+  {
+    q: 'อะไรคือความต่างหลักในจุดประสงค์ระหว่าง local กับ output',
+    options: [
+      'local ตั้งค่าโดย user ได้ ส่วน output ถูกคำนวณอัตโนมัติ',
+      'local เป็น expression ที่มีชื่อไว้ใช้ซ้ำภายใน configuration ส่วน output เปิดเผยค่าออกไปภายนอกหลัง apply',
+      'ไม่มีความต่างจริง ๆ มันคือ syntax ที่ใช้แทนกันได้สำหรับ feature เดียวกัน',
+      'local เก็บได้แค่ string ส่วน output เก็บ type อะไรก็ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'local ต่างจาก variable อย่างไร',
+    options: [
+      'local คำนวณจาก expression ภายใน configuration ส่วน variable คือค่าที่ caller ส่งมาจากภายนอก',
+      'local มี default value เสมอ ส่วน variable ไม่มีเลย',
+      'local ตั้งค่าได้ด้วย -var บน command line ส่วน variable ตั้งแบบนั้นไม่ได้',
+      'ทั้งสองเหมือนกันทุกอย่างต่างแค่ keyword ของ block',
+    ],
+    answer: 0,
+  },
+  {
+    q: 'ทำไม output ถึงสำคัญกับการ compose infrastructure ทั้งที่ module กับ Terragrunt dependency จะพูดถึงละเอียดกว่าทีหลัง',
+    options: [
+      'output เข้ารหัสค่าอัตโนมัติก่อนส่งระหว่าง module',
+      'output คือกลไกเดียวที่ module หรือ unit ที่ deploy แยกกันมีไว้ส่งค่าที่คำนวณแล้วกลับไปให้คนที่นำไปใช้ต่อ',
+      'output ทำให้ไม่ต้องใช้ variable เลยหลังจากเริ่มใช้ module',
+      'ต้องมี output ก่อนถึงจะสร้าง resource ใด ๆ ได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'terraform output -json มีประโยชน์ตรงไหน',
+    options: [
+      'ลบ output ทั้งหมดออกจาก state file',
+      'แสดงค่า output เป็น JSON ทำให้ script หรือ CI pipeline นำไปใช้ต่อแบบ programmatic ได้แทนที่จะให้คนอ่าน plain text',
+      'mark output ทุกตัวให้เป็น sensitive อัตโนมัติ',
+      'ต้องรันก่อน terraform apply ถึงจะสำเร็จ',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="variables-and-data-flow/outputs-and-locals" questions={quizOutputsAndLocalsAzure} />
+
+<ProgressTracker client:visible id="variables-and-data-flow/outputs-and-locals" />

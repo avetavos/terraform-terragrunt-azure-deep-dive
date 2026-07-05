@@ -1,0 +1,161 @@
+---
+title: 'Terraform Workspaces'
+description: 'workspace ของ Terraform ทำให้ configuration เดียวจัดการหลาย state ที่แยกชื่อกันได้ยังไง และทำไมความสะดวกนั้นถึงไม่ได้ให้ environment isolation จริง'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+Terraform workspace ทำให้ configuration เดียวเก็บ state file แยกกันได้หลายอัน แต่ละอันมีชื่อของตัวเอง เป็นวิธีถูก ๆ ที่จำลอง dev, staging, prod แต่ workspace ไม่ได้เปลี่ยนอะไรเกี่ยวกับ backend, provider, หรือ Azure subscription ที่ configuration นั้นคุยด้วยจริง ๆ เลย
+
+## configuration เดียว หลาย state file
+
+`terraform workspace` คือชุดคำสั่งในตัวสำหรับจัดการ state ที่มีชื่อ ภายใน working directory เดียว สร้าง workspace หนึ่งอันต่อ environment แล้ว Terraform จะเก็บ state file แยกกันโดยสมบูรณ์ให้แต่ละอัน
+
+```bash
+terraform workspace new dev
+terraform workspace new staging
+terraform workspace new prod
+
+terraform workspace list
+#   dev
+#   staging
+# * prod
+
+terraform workspace select dev
+```
+
+workspace ที่ active อยู่คือตัวชี้เฉย ๆ ว่า workspace ไหนถูกเลือกอยู่จะเป็นตัวกำหนดว่า `plan` หรือ `apply` ครั้งถัดไปจะอ่านและเขียน state file ไหน ถ้าใช้ local backend แบบ default Terraform จะเก็บไว้ใต้ `terraform.tfstate.d` แยก subdirectory ต่อ workspace หนึ่งอัน
+
+```bash
+tree terraform.tfstate.d
+terraform.tfstate.d
+├── dev
+│   └── terraform.tfstate
+├── staging
+│   └── terraform.tfstate
+└── prod
+    └── terraform.tfstate
+```
+
+ถ้าใช้ remote backend อย่าง `azurerm` แนวคิดเดียวกันนี้ยังใช้ได้ Terraform จะแยก namespace ของ state blob ต่อ workspace แทนที่จะแยกต่อ local directory แต่ผลลัพธ์เหมือนกันทุกประการ คือ `dev` มองไม่เห็นและเขียนทับ resource ของ `prod` ไม่ได้ เพราะอยู่คนละ state กันโดยสิ้นเชิง
+
+## การปรับพฤติกรรมด้วย terraform.workspace
+
+Terraform เปิดชื่อของ workspace ที่กำลัง select อยู่ให้ใช้ผ่านค่า built-in ชื่อ `terraform.workspace` ซึ่ง interpolate ได้ทุกที่ที่ต้องการ string การใช้งานที่พบบ่อยที่สุดคือเลือกขนาดหรือชื่อต่อ environment จาก lookup map
+
+```hcl
+locals {
+  vm_size = {
+    dev     = "Standard_B1s"
+    staging = "Standard_B2s"
+    prod    = "Standard_D2s_v5"
+  }
+}
+
+resource "azurerm_linux_virtual_machine" "app" {
+  name                = "app-${terraform.workspace}"
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  size                = local.vm_size[terraform.workspace]
+
+  admin_username = "azureuser"
+  # ...
+}
+```
+
+select `dev` แล้ว VM จะถูกตั้งชื่อ `app-dev` และขนาด `Standard_B1s` select `prod` ไฟล์ `.tf` เดียวกันนี้จะได้ `app-prod` ขนาด `Standard_D2s_v5` โดยไม่มีโค้ดซ้ำที่ไหนเลย นี่คือจุดขายของ workspace คือมีชุด `.tf` เดียว มีที่แก้ bug จุดเดียว และความต่างต่อ environment ขับเคลื่อนด้วย workspace ไหนกำลัง active อยู่ล้วน ๆ
+
+## สิ่งที่ workspace ไม่ isolate
+
+นี่คือจุดที่พลาดง่าย `terraform workspace new` สร้างแค่ state file ใหม่เท่านั้น มันไม่ได้สร้าง backend configuration ใหม่ ไม่ได้สร้าง provider configuration ใหม่ และไม่ได้สร้าง Azure subscription ใหม่ ทั้งหมดนั้นอยู่ใน `.tf` code เดียวกัน แชร์กันทุกตัวอักษรข้ามทุก workspace
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "app.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "00000000-0000-0000-0000-000000000000"
+}
+```
+
+ทุก workspace ทั้ง `dev`, `staging`, และ `prod` อ่านเขียนผ่าน `backend` block เดียวกันนั้น และ authenticate ผ่าน `provider` block เดียวกันนั้น กับ `subscription_id` เดียวกันนั้น ไม่มี credential ที่ scope ต่อ workspace ไม่มี subscription ที่ scope ต่อ workspace และไม่มี copy ของ `.tf` code ที่ scope ต่อ workspace สิ่งเดียวที่ต่างกันระหว่าง workspace คือ state file ไหนถูกแตะ กับอะไรก็ตามที่เลือก key ไว้ด้วย `terraform.workspace`
+
+นั่นทำให้ workspace เข้ากันไม่ดีกับ environment ที่ต้องการ Azure subscription, region, หรือ credential ที่แยกกันจริง ๆ และสร้างความเสี่ยงจริงที่เฉพาะเจาะจงขึ้นมาอันหนึ่ง คือไม่มีอะไรใน tooling หยุดใครสักคนไม่ให้อยู่บน `prod` workspace ทั้งที่คิดว่ายังอยู่บน `dev` แล้ว apply การเปลี่ยนแปลงที่ตั้งใจไว้สำหรับ environment เล็ก ๆ ตรงเข้าไปที่ production ได้ เพราะ backend, provider, และ subscription เบื้องหลังไม่เคยเปลี่ยนเลยสักนิด
+
+<Mermaid title="One Terraform config and one backend, three workspaces, three state files, but everything else shared including the Azure subscription" code={workspaceDiagram} />
+
+export const workspaceDiagram = `flowchart LR
+  config["One Terraform config, one backend block"] -->|terraform workspace new dev| devWs["dev workspace"]
+  config -->|terraform workspace new staging| stagingWs["staging workspace"]
+  config -->|terraform workspace new prod| prodWs["prod workspace"]
+  devWs --> devState["dev state file"]
+  stagingWs --> stagingState["staging state file"]
+  prodWs --> prodState["prod state file"]
+  devWs -.-> shared["Same subscription_id, same backend, same .tf code"]
+  stagingWs -.-> shared
+  prodWs -.-> shared`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Terraform **workspace** ให้แต่ละ environment ที่มีชื่อของตัวเองมี **state file** แยกกันของตัวเอง จากชุด `.tf` เดียวกัน และ `terraform.workspace` ให้ปรับชื่อ ขนาด และ tag ต่อ environment ได้ถูก ๆ แต่ workspace แชร์ **backend**, **provider**, และ Azure **subscription_id** เดียวกันข้ามทุก workspace ดังนั้นมันแก้ปัญหา DRY reuse ได้ดี แต่ปล่อยให้ isolation อ่อนแอ และความเสี่ยงจริงคือการ apply การเปลี่ยนแปลงที่ตั้งใจไว้สำหรับ environment หนึ่ง ขณะที่นั่งอยู่บน workspace ผิดโดยไม่รู้ตัว
+</Callout>
+
+export const quizWorkspaces = [
+  {
+    q: 'การสร้าง Terraform workspace ใหม่ isolate อะไรจาก workspace อื่นจริง ๆ',
+    options: [
+      'Azure subscription แยกต่างหากสำหรับ workspace นั้น',
+      'state file แยกต่างหาก ในขณะที่ backend configuration, provider configuration, และ .tf code ยังคงแชร์กันอยู่',
+      'copy ของ .tf source file แยกต่างหาก',
+      'ชุด Azure credential แยกต่างหาก',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'อะไรที่แชร์เหมือนกันทุกประการข้ามทุก workspace ใน configuration เดียวกัน',
+    options: [
+      'state file',
+      'backend configuration, provider configuration, และ subscription_id',
+      'ค่าที่ terraform.workspace คืนมา',
+      'รายการ resource ที่ถูกเลือกอยู่ตอนนี้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'terraform.workspace มักถูกใช้ทำอะไร',
+    options: [
+      'สลับ subscription_id ที่ provider block ใช้ authenticate',
+      'interpolate ชื่อ workspace ที่ active เข้าไปในชื่อ resource, tag, หรือ lookup map เพื่อปรับขนาดต่อ environment',
+      'เลือก backend type ที่ Terraform ใช้เก็บ state',
+      'generate provider block ใหม่ให้แต่ละ environment',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ความเสี่ยงจริงที่เฉพาะเจาะจงซึ่ง Terraform workspace สร้างขึ้นมาคืออะไร',
+    options: [
+      'workspace เปลี่ยนชื่อไม่ได้หลังสร้างแล้ว',
+      'ไม่มีอะไรหยุดใครสักคนไม่ให้อยู่บน workspace ผิด แล้ว apply การเปลี่ยนแปลงขนาด prod ทั้งที่คิดว่ายังอยู่ใน dev เพราะ backend, provider, และ subscription ไม่เคยเปลี่ยนเลย',
+      'workspace ต้องใช้ Terraform Cloud แบบเสียเงินเท่านั้นถึงจะใช้ได้',
+      'state file ของ workspace เก็บแบบ remote ไม่ได้',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/terraform-workspaces" questions={quizWorkspaces} />
+
+<ProgressTracker client:visible id="multi-environment/terraform-workspaces" />

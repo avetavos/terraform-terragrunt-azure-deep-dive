@@ -1,0 +1,191 @@
+---
+title: 'Production Checklist'
+description: 'A closing, synthesizing checklist tying every module of this course into one concrete, production-ready Terraform and Terragrunt repository on Azure.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A production-ready Terraform and Terragrunt setup on Azure is not one single feature, but the sum of every practice this course has covered — remote state, pinned versions, reviewed plans, protected secrets, static analysis and policy gates, dependency-ordered units, and real tests — wired together into one CI-driven repository.
+
+## The checklist, one line of reasoning per item
+
+Each item below traces back to a concrete failure mode a specific lesson in this course was built around:
+
+- **A remote `azurerm` backend with blob-lease locking, from day one.** Local state means one laptop's disk is the only copy of the truth about your entire Azure footprint, and two engineers running `apply` at once can corrupt it — the State Management module's whole reason for existing.
+- **Provider versions pinned via `.terraform.lock.hcl`, module versions pinned to a tag or version constraint.** An unpinned provider or module can silently resolve to a new major version the next time `init` runs, changing behavior nobody asked for in the middle of an unrelated change.
+- **`plan` reviewed in CI before every `apply`, watching specifically for unexpected resource replacements.** A `-/+` in a plan means destroy-then-recreate on a real, stateful Azure resource — reviewing a plan like a normal code diff misses exactly the line that matters most.
+- **Sensitive values kept out of Terraform variables and state where a secrets-manager data source is available, and Azure RBAC tightly restricting who can read the state container.** `sensitive = true` only redacts CLI output; the real protection is restricting read access to the backend and minimizing what ever needs to be typed into a variable in the first place.
+- **`tflint` and a security scanner, and ideally policy as code, wired into CI.** Static analysis catches known-bad HCL in seconds before `plan` runs at all; policy as code (Sentinel or OPA) then evaluates the actual computed plan against organizational rules that only make sense once a real change exists.
+- **Terragrunt `dependency` blocks driving multi-unit rollout ordering.** Splitting infrastructure into independent units (`vnet`, `vm`, `database`) is only safe if a unit that needs another unit's output — a subnet ID, a resource group name — declares that dependency explicitly, so Terragrunt applies them in the right order instead of relying on humans to remember it.
+- **`terraform test` and `.tftest.hcl` coverage for any module doing something non-trivial.** `validate` checks syntax and `plan` checks that Azure accepts the request, but neither one asserts that a module's actual behavior is correct — that is what `terraform test` is for.
+
+## Dependency blocks: the piece that orders a multi-unit rollout
+
+A Terragrunt `dependency` block is what lets one unit consume another unit's real output without either unit knowing about the other's internal implementation. A `vm` unit that needs the subnet a `vnet` unit created declares that dependency directly in its own `terragrunt.hcl`:
+
+```hcl
+# vm/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+dependency "vnet" {
+  config_path = "../vnet"
+
+  mock_outputs = {
+    subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/mock-subnet"
+  }
+  mock_outputs_allowed_terraform_commands = ["plan"]
+}
+
+terraform {
+  source = "git::https://github.com/acme-corp/terraform-modules.git//vm?ref=v1.4.0"
+}
+
+inputs = {
+  subnet_id = dependency.vnet.outputs.subnet_id
+}
+```
+
+Terragrunt reads this `dependency` block and figures out the correct apply order on its own: `terragrunt run --all apply` applies `vnet` first, reads its real `subnet_id` output once it exists, and only then runs `vm` with that real value as an input — nobody has to hardcode an ordering or remember to apply units in the right sequence by hand. The `mock_outputs` block matters specifically for `plan`: it lets a `plan` for `vm` run cleanly even before `vnet` has ever been applied, using a placeholder value instead of failing because the real output does not exist yet.
+
+## The end-to-end picture
+
+Put every item together and a production Terragrunt repository on Azure looks like this: one `root.hcl` at the top declaring the shared `remote_state` backend and provider `generate` blocks, a handful of unit directories beneath it — `vnet/`, `vm/` (or `aks/`), and `sql/` are a realistic minimal set — each with its own `terragrunt.hcl` wiring in whatever `dependency` blocks it actually needs, and a CI pipeline that authenticates via OIDC federated credentials, running `terragrunt run --all plan` on every pull request and `terragrunt run --all apply` only after merge to main.
+
+```yaml
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/**'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init && tflint --recursive
+      - name: Run checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infra
+
+  plan:
+    needs: static-analysis
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+      - run: terragrunt run --all plan -no-color | tee plan.txt
+      - run: gh pr comment ${{ github.event.pull_request.number }} --body-file plan.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  apply:
+    needs: static-analysis
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+      - run: terragrunt run --all apply --non-interactive
+```
+
+Nothing in that pipeline is new by this point in the course — every stage is a lesson you already worked through, assembled into one repository: `vnet`, `vm`/`aks`, and `sql` as independent units under one `root.hcl`; `dependency` blocks giving Terragrunt the real ordering between them; `tflint` and `checkov` failing fast before a plan is even attempted; OIDC replacing any stored client secret; a reviewed plan gating every apply; and `apply` itself reserved for after merge, behind an approval gate, run by the pipeline rather than a laptop.
+
+<Mermaid title="root.hcl plus dependency-ordered units, all deployed through a CI pipeline that authenticates via OIDC and gates apply behind a reviewed plan" code={productionRepoDiagram} />
+
+export const productionRepoDiagram = `flowchart TB
+  root["root.hcl (remote_state + provider generate)"] --> vnet["vnet unit"]
+  root --> vm["vm / aks unit"]
+  root --> sql["sql unit"]
+  vnet -->|dependency block| vm
+  vnet -->|dependency block| sql
+  pr["Pull request"] -->|OIDC auth| planj["terragrunt run --all plan"]
+  planj -->|reviewed and merged| applyj["terragrunt run --all apply"]
+  vnet -.-> planj
+  vm -.-> planj
+  sql -.-> planj`;
+
+<Callout title="The one-line takeaway">
+A production-ready Terraform and Terragrunt setup on Azure is the sum of this whole course: a remote **`azurerm` backend** with blob-lease locking from day one, provider and module versions **pinned** via `.terraform.lock.hcl` and version constraints, every `plan` **reviewed in CI** before `apply` with a specific eye for unexpected `-/+` replacements, secrets pulled from a real secrets manager rather than sitting in variables or an unprotected state container, **`tflint`/a security scanner and policy as code** wired into the pipeline, Terragrunt **`dependency`** blocks ordering a multi-unit rollout automatically, and **`terraform test`** coverage for any module worth trusting. Put together, that is one `root.hcl`, a handful of dependency-ordered units like `vnet`, `vm`/`aks`, and `sql`, and a CI pipeline authenticated via **OIDC** that plans on every pull request and applies only after merge.
+</Callout>
+
+export const quizProductionChecklist = [
+  {
+    q: 'Why does a production Terraform setup need a remote azurerm backend with locking from day one, rather than local state',
+    options: [
+      'Local state is slower to read than remote state in every case',
+      'Local state means one machine holds the only copy of the truth about your Azure footprint, and concurrent applies from different engineers can corrupt it without locking',
+      'Remote backends are required for terraform validate to run at all',
+      'Local state cannot store more than a handful of resources',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does a reviewed plan in CI specifically need to watch for unexpected resource replacements',
+    options: [
+      'Because replacements always fail and waste CI minutes',
+      'Because a -/+ in a plan means a stateful Azure resource will be destroyed and recreated, which can mean real data loss or downtime the moment someone approves it',
+      'Because replacements are the only change type Terraform can apply successfully',
+      'Because reviewed plans are only relevant for non-production environments',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does a Terragrunt dependency block give you that manually applying units in the right order does not',
+    options: [
+      'It removes the need for separate state files per unit',
+      'It lets a unit consume another unit’s real output automatically, with Terragrunt computing the correct apply order instead of relying on someone to remember the right sequence by hand',
+      'It replaces the need for a remote backend entirely',
+      'It allows units to share a single terragrunt.hcl file',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why should sensitive values be kept out of Terraform variables where possible, even with a remote backend already in place',
+    options: [
+      'Because variables are always slower to evaluate than data sources',
+      'Because even with a protected remote backend, a value defined as a variable still requires a human to type the real secret somewhere first, unlike pulling it from a secrets manager via a data source at apply time',
+      'Because Terraform variables cannot be used inside a resource block at all',
+      'Because a protected remote backend already fully solves the secrets problem on its own',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/production-checklist" questions={quizProductionChecklist} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/production-checklist" />

@@ -1,0 +1,129 @@
+---
+title: 'Why Terragrunt'
+description: 'Why Terraform workspaces and directory-per-environment each solve only half the multi-environment problem, and what gap Terragrunt exists to close.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Terraform workspaces solve reuse well but leave isolation weak, directory-per-environment solves isolation well but reintroduces duplicated boilerplate, and Terragrunt exists specifically to close the gap between them without asking you to give up either property.
+
+## Two halves of one problem, recap
+
+The last two lessons walked through Terraform's two native answers to the multi-environment problem, and each one traded one goal for the other. A **workspace** keeps one `.tf` config and one `backend`/`provider` block, and just switches which state file is active:
+
+```bash
+# Workspaces: one directory, one backend, one provider, one subscription_id
+# for every environment, only the active workspace changes
+terraform workspace select prod
+terraform apply
+```
+
+**Directory-per-environment** goes the other way: real isolation through a genuinely separate directory, backend, and provider block per environment, at the cost of that backend/provider boilerplate being copy-pasted almost verbatim into every environment:
+
+```bash
+# Directory-per-environment: real isolation, separate backend and provider
+# per environment, but environments/dev, environments/staging, and
+# environments/prod each carry their own near-identical backend.tf
+cd environments/prod
+terraform init
+terraform apply
+```
+
+Neither approach is wrong, and neither is a bug in Terraform — they are two different, honest trade-offs between the same two goals. What Terraform does not offer, on its own, is a single primitive that gives you strong isolation and zero configuration duplication across environments at the same time.
+
+## What Terragrunt actually is
+
+**Terragrunt** is a thin wrapper and orchestrator that sits on top of the real `terraform` (or `tofu`) binary. It does not introduce a new resource syntax, and the module code you write to actually create Azure resources stays exactly what it already is: plain Terraform, in plain `.tf` files, unchanged.
+
+What Terragrunt adds is a layer above that code, aimed squarely at the duplication that directory-per-environment reintroduces. Instead of writing out a near-identical `backend.tf` and `provider.tf` in every environment directory by hand, Terragrunt lets you define the backend and provider configuration once, centrally, and generate the per-environment specifics — the state `key`, the `subscription_id`, the resource group — from that one definition:
+
+```hcl
+# terragrunt.hcl (a conceptual preview only; the actual syntax is the
+# subject of the next module, Terragrunt Fundamentals)
+# One central place that generates the backend and provider blocks for
+# every environment, instead of copy-pasting them into environments/dev,
+# environments/staging, and environments/prod by hand
+remote_state {
+  backend = "azurerm"
+}
+```
+
+The same idea extends to supplying each environment's input variables and, once infrastructure is split across multiple independently-applied units, to understanding which unit depends on which so that Terragrunt applies them in the right order.
+
+## What Terragrunt is not
+
+Terragrunt is not a fork of Terraform, it does not compile to a different infrastructure-as-code language, and it is not a replacement for the `terraform` binary. Every Terragrunt command ultimately shells out to a real `terraform` or `tofu` command underneath, running against the exact same providers and the exact same state formats Terraform already understands:
+
+```bash
+# Every terragrunt command wraps a real terraform (or tofu) command
+terragrunt plan   # generates config, then runs a real `terraform init` and `terraform plan`
+terragrunt apply  # generates config, then runs a real `terraform apply`
+```
+
+That distinction matters for one more reason beyond reducing boilerplate. A single Terraform configuration already has its own internal dependency graph between resources, but that graph stops at the edge of one `terraform apply`. Once an environment's infrastructure is deliberately split into multiple, independently-applied units — a network unit, a database unit, an application unit, each with its own state — nothing in Terraform itself knows that the application unit needs the database unit's outputs first. That is the second kind of problem Terragrunt is built to solve: ordering and passing outputs between separately-applied units, which the next module covers in detail.
+
+<Mermaid title="Workspaces and directory-per-environment each close half the gap; Terragrunt wraps the real terraform binary to close the rest" code={terragruntGapDiagram} />
+
+export const terragruntGapDiagram = `flowchart LR
+  workspaces["Terraform workspaces: DRY, weak isolation"] --> gap["The gap: no native primitive gives both at once"]
+  dirPerEnv["Directory-per-environment: isolated, duplicated"] --> gap
+  gap --> terragrunt["Terragrunt: generates config, removes duplication"]
+  terragrunt --> realTf["Real terraform / tofu binary actually runs"]`;
+
+<Callout title="The one-line takeaway">
+Terraform workspaces solve **DRY reuse** at the cost of weak isolation, and the directory-per-environment pattern solves **isolation** at the cost of duplicated backend, provider, and module-source boilerplate, and Terraform alone has no native primitive that gives you both simultaneously. **Terragrunt** closes that gap not by replacing Terraform but by wrapping it — it is a thin orchestrator that generates backend and provider configuration from one central definition, supplies per-environment inputs, and understands ordering across independently-applied units, while every command it runs still shells out to a real `terraform` or `tofu` binary underneath.
+</Callout>
+
+export const quizWhyTerragrunt = [
+  {
+    q: 'What gap does neither Terraform workspaces nor the directory-per-environment pattern fully close on its own',
+    options: [
+      'Neither approach can store state remotely',
+      'Neither approach delivers strong isolation and zero configuration duplication across environments at the same time',
+      'Neither approach supports the azurerm provider',
+      'Neither approach allows more than one environment to exist',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is Terragrunt actually, versus what it is commonly mistaken for',
+    options: [
+      'A fork of Terraform with its own resource syntax and its own state format',
+      'A thin wrapper and orchestrator around the real terraform or tofu binary, not a replacement for it or a new infrastructure-as-code language',
+      'A hosted service that replaces the need to run terraform apply at all',
+      'A linter that only checks Terraform code style without running anything',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What kind of problem does Terragrunt additionally solve that the internal dependency graph inside a single Terraform configuration does not',
+    options: [
+      'Formatting HCL code consistently across files',
+      'Ordering and passing outputs correctly across multiple, independently-applied units of infrastructure, a boundary that a single terraform apply dependency graph cannot see across',
+      'Choosing which Azure region a resource is deployed to',
+      'Validating provider version constraints',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does every Terragrunt command ultimately do underneath',
+    options: [
+      'It sends the configuration to a separate Terragrunt-only execution engine',
+      'It shells out to a real terraform or tofu command, running against the same providers and state formats Terraform already understands',
+      'It skips Terraform entirely and calls the Azure Resource Manager API directly',
+      'It converts the configuration into a different declarative language before applying it',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/why-terragrunt" questions={quizWhyTerragrunt} />
+
+<ProgressTracker client:visible id="multi-environment/why-terragrunt" />

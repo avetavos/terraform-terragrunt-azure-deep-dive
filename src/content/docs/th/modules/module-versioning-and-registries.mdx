@@ -1,0 +1,123 @@
+---
+title: 'Module Versioning and Registries'
+description: 'ทำไมการ pin module version ถึงสำคัญ pessimistic constraint operator ทำงานอย่างไร และเมื่อไหร่ที่ private module source สมเหตุสมผล'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+module `source` ที่ไม่ pin version สามารถ resolve ไปเป็น version ใหม่กว่าเดิมแบบเงียบ ๆ ในครั้งถัดไปที่มีคนรัน `init` ดังนั้นการ pin `version` constraint คือวินัยเดียวกับที่คุณใช้กับ provider lock file อยู่แล้ว เพียงแต่เล็งไปที่ module code แทนที่จะเป็น provider code
+
+## ทำไม module version ที่ไม่ pin ถึงเป็นความเสี่ยงแบบเงียบ ๆ
+
+module ที่มาจาก Registry หรือ Git tag ไม่ได้ถูก freeze ไว้กับที่เหมือน local relative path ถ้า `module` block ไม่มี `version` constraint การรัน `terraform init -upgrade` — หรือแม้แต่ `init` ใหม่ใน CI pipeline ที่ไม่เคยรันมาก่อน — สามารถดึง release ใหม่กว่าของ module นั้นเข้ามาโดยไม่มีใคร review changelog ของมันก่อน upgrade ที่ดูเหมือนเล็กน้อยสามารถเปลี่ยนชื่อ variable เปลี่ยน default หรือปรับโครงสร้าง resource ที่มันสร้างใหม่ทั้งหมด และไม่มีอะไรแสดงให้เห็นจนกว่า `plan` หรือ `apply` จะเริ่มทำงานต่างจากเมื่อวาน
+
+```hcl
+# unpinned - always resolves to the latest version on init -upgrade
+module "vnet" {
+  source = "Azure/vnet/azurerm"
+}
+```
+
+นี่คือ failure mode เดียวกันเป๊ะกับที่ provider lock file มีไว้เพื่อป้องกัน แค่ขยับขึ้นไปอีกระดับหนึ่ง: แทนที่จะเป็น provider plugin ที่เปลี่ยนไปโดยที่คุณไม่รู้ตัว มันกลายเป็น implementation ภายในของ module เองที่เปลี่ยนไปโดยที่คุณไม่รู้ตัวแทน
+
+## pessimistic constraint operator: version = "~> 5.0"
+
+การ pin module จาก Registry หรือ Git tag ด้วย `version` argument แก้ปัญหานี้ได้ pattern ที่ใช้กันทั่วไปคือ pessimistic constraint operator, `~>`:
+
+```hcl
+# pinned - allows 5.x patch and minor upgrades, blocks a 6.0 major bump
+module "vnet" {
+  source  = "Azure/vnet/azurerm"
+  version = "~> 5.0"
+}
+```
+
+`~> 5.0` แปลว่า "อนุญาต version ใด ๆ ที่มากกว่าหรือเท่ากับ `5.0` จนถึงแต่ไม่รวม `6.0`" พูดอีกแบบคือ มันให้ Terraform รับ patch และ minor release ภายในสาย `5.x` ได้ — bug fix กับของใหม่ที่ backward-compatible — แต่ปฏิเสธการกระโดดไป `6.0` แบบเงียบ ๆ เพราะ major version bump คือสัญญาณที่ผู้สร้าง module บอกคุณว่าให้เตรียมรับ breaking changes คุณยังเป็นคนเลือกเองว่าจะกระโดดตอนไหน และอ่าน changelog ของ module ก่อนได้
+
+## private module source และการ publish module ของตัวเอง
+
+ไม่ใช่ทุก module ที่ควรอยู่บน public Registry module ที่ encode networking layout, naming convention หรือ compliance requirement เฉพาะขององค์กรหนึ่งไม่ควรถูก publish ให้คนทั้งโลกเห็น สำหรับกรณีแบบนี้ องค์กรมักใช้ **private Git repository** หรือ **private module registry** — private registry ของ HCP Terraform หรือของที่ self-hosted เอง — เพื่อให้ module ยังมี version และค้นหาได้ภายในองค์กร โดยไม่ต้องกลายเป็น public
+
+```hcl
+# private Git repository
+module "internal_networking" {
+  source = "git::ssh://git@github.com/acme-corp/terraform-modules.git//networking?ref=v2.1.0"
+}
+
+# private module registry (e.g. HCP Terraform)
+module "internal_networking" {
+  source  = "app.terraform.io/acme-corp/networking/azurerm"
+  version = "~> 2.1"
+}
+```
+
+ถ้าคุณต้องการ publish module ออกสู่สาธารณะ public Terraform Registry ต้องการ repository naming convention เฉพาะแบบนี้: `terraform-<PROVIDER>-<NAME>` เช่น `terraform-azurerm-vnet` Registry parse ชื่อนี้เพื่อดูว่า module เล็งไปที่ provider ไหนและควรเรียกว่าอะไร ดังนั้น repository ที่ไม่ตาม pattern นี้จะ publish ไม่สำเร็จ
+
+<Mermaid title="A pinned module version versus an unpinned one that can silently resolve to a newer release" code={moduleVersioningDiagram} />
+
+export const moduleVersioningDiagram = `flowchart TB
+  subgraph pinned["Pinned version"]
+    p1["version = ~> 5.0"] --> p2["terraform init always resolves within 5.x"]
+  end
+  subgraph unpinned["Unpinned version"]
+    u1["no version constraint"] --> u2["terraform init -upgrade may resolve 6.0"]
+    u2 --> u3["breaking changes applied without changelog review"]
+  end`;
+
+<Callout title="The one-line takeaway">
+module `source` ที่ไม่ pin version สามารถ resolve ไปเป็น version ใหม่กว่าเดิมที่มี breaking changes แบบเงียบ ๆ ในครั้งถัดไปที่ `init` รัน ดังนั้น module จาก Registry และ Git tag ควรมี `version` constraint เหมือนที่ provider มีใน lock file pessimistic constraint operator, `version = "~> 5.0"`, อนุญาต patch และ minor upgrade ภายในสาย `5.x` แต่บล็อกการ bump major version ไป `6.0` จนกว่าคุณจะเลือกกระโดดเอง module เฉพาะขององค์กรที่ไม่ควรเป็น public มักอยู่ใน **private Git repository** หรือ **private module registry** แทนที่จะเป็น public Registry และ module ที่คุณต้องการ publish สู่สาธารณะต้องตาม repository naming convention `terraform-<PROVIDER>-<NAME>` เช่น `terraform-azurerm-vnet`
+</Callout>
+
+export const quizModuleVersioning = [
+  {
+    q: 'การปล่อย Registry หรือ Git-tag module source ไว้โดยไม่มี version constraint สร้างความเสี่ยงอะไร',
+    options: [
+      'ไม่มีความเสี่ยงเลย Terraform ใช้ version เดิมที่ใช้ครั้งแรกเสมอไม่ว่าจะมี constraint หรือไม่',
+      'terraform init -upgrade ครั้งถัดไป หรือ init ใหม่ใน CI อาจดึง version ใหม่ที่มี breaking changes เข้ามาแบบเงียบ ๆ โดยไม่มีใคร review module changelog ก่อน',
+      'มีผลแค่กับ output ของ terraform fmt เท่านั้น ไม่มีผลกับ plan หรือ apply',
+      'มันบังคับให้ caller ทุกคนของ module ต้องใช้ Terraform CLI version เดียวกันเป๊ะ',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'version = "~> 5.0" อนุญาตอะไรและบล็อกอะไร',
+    options: [
+      'อนุญาตทุก version รวมถึง 6.0 ขึ้นไป โดยไม่มีข้อจำกัด',
+      'อนุญาตแค่ version 5.0 เป๊ะ ๆ เท่านั้น',
+      'อนุญาต patch และ minor upgrade ในสาย 5.x แต่บล็อกการ bump major version ไป 6.0',
+      'บล็อก upgrade ทั้งหมดจนกว่าจะเอา constraint ออกด้วยมือ',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'ทำไมองค์กรอาจใช้ private Git repository หรือ private module registry แทน public Terraform Registry สำหรับ module หนึ่ง',
+    options: [
+      'เพราะ private source ดาวน์โหลดเร็วกว่า public Registry module เสมอ',
+      'เพราะ module นั้น encode รายละเอียด infrastructure เฉพาะของบริษัทที่ไม่ควร publish สู่สาธารณะ แต่ยังต้องมี version และค้นหาได้ภายในองค์กร',
+      'เพราะ public Terraform Registry ไม่รองรับ version argument',
+      'เพราะ private source ไม่ต้องมี source argument ใน module block',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'public Terraform Registry ต้องการ repository naming convention แบบไหนสำหรับการ publish module ของตัวเอง',
+    options: [
+      'any-name-you-want-azurerm',
+      'terraform-<PROVIDER>-<NAME> เช่น terraform-azurerm-vnet',
+      '<NAME>-terraform-module',
+      'azurerm-terraform-<NAME>',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="modules/module-versioning-and-registries" questions={quizModuleVersioning} />
+
+<ProgressTracker client:visible id="modules/module-versioning-and-registries" />

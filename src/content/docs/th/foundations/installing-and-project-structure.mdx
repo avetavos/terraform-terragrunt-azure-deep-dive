@@ -1,0 +1,218 @@
+---
+title: 'ติดตั้ง Terraform และโครงสร้างโปรเจกต์'
+description: 'การติดตั้ง Terraform ด้วย version manager อย่าง tenv, โปรเจกต์ Azure จริงแบบขั้นต่ำ, การจัดวางไฟล์ตามธรรมเนียม และคำสั่ง terraform fmt กับ terraform validate'
+sidebar:
+  order: 5
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+ติดตั้ง Terraform ผ่าน version manager แทนการใช้ binary เดียวที่ pin เวอร์ชันตายตัว เขียน Azure resource จริงตัวแรกของคุณ แล้วแบ่งมันออกเป็นไฟล์หลายไฟล์ตามชื่อที่เป็นธรรมเนียม — ซึ่งจริง ๆ แล้ว Terraform ไม่ได้บังคับสักไฟล์เดียว
+
+## ติดตั้ง Terraform (และทำไม version manager ถึงดีกว่า binary เดียว)
+
+คุณดาวน์โหลด Terraform binary เดียวจาก HashiCorp แล้ววางไว้ใน `PATH` ได้ วิธีนี้ใช้งานได้ดีสำหรับการทดลองคนเดียว แต่ทันทีที่คุณทำงานมากกว่าหนึ่งโปรเจกต์ วิธีนี้จะเริ่มพัง repository หนึ่งเขียนไว้กับ Terraform 1.5 อีกอันต้องการ feature ของ 1.9 ส่วนอันที่สาม migrate ไป OpenTofu ไปแล้ว การคอย sync binary กลางตัวเดียวให้ตรงกับโปรเจกต์ที่คุณกำลังทำอยู่ตลอดเวลาเป็นงานจุกจิกที่ผิดพลาดได้ง่าย
+
+**version manager** แก้ปัญหานี้ด้วยการติดตั้งหลายเวอร์ชันไว้เคียงข้างกัน แล้วสลับใช้ตามแต่ละโปรเจกต์ โดยปกติขับเคลื่อนด้วยไฟล์ระบุเวอร์ชันที่ commit เข้า repository **tenv** เป็นตัวเลือกที่ดีเพราะมันไม่ได้ผูกติดกับเครื่องมือตัวเดียว มันจัดการเวอร์ชันของ Terraform, OpenTofu, Terragrunt และ Atmos ได้ทั้งหมดจาก CLI ตัวเดียว ซึ่งสำคัญมากเมื่อทีมของคุณรัน Terragrunt คู่กับ Terraform (จะพูดถึงทีหลังในคอร์สนี้)
+
+```bash
+# install tenv (macOS, via Homebrew)
+brew install tenv
+
+# install and pin a specific Terraform version for the current directory
+tenv tf install 1.9.0
+tenv tf use 1.9.0
+
+# tenv reads a .terraform-version file (or the terraform block's
+# required_version constraint) to pick the right version automatically
+terraform version
+```
+
+ไม่ว่าคุณจะใช้วิธีติดตั้งแบบไหน คำสั่งที่ใช้งานกับ `terraform` binary เองในแต่ละวันจะเหมือนกันทุกประการ — version manager เปลี่ยนแค่วิธีที่ binary นั้นมาอยู่บนเครื่องคุณเท่านั้น
+
+## โปรเจกต์ Azure จริงแบบขั้นต่ำ
+
+โปรเจกต์ Terraform ก็แค่ directory ที่มีไฟล์ `.tf` หนึ่งไฟล์หรือมากกว่านั้น ไฟล์ที่เล็กที่สุดที่ใช้งานได้จริงจะประกาศ provider, resource group และ resource หนึ่งตัวข้างใน
+
+```hcl
+terraform {
+  required_version = ">= 1.7.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+
+resource "azurerm_resource_group" "main" {
+  name     = "example-resources"
+  location = "East US"
+}
+
+resource "azurerm_storage_account" "reports" {
+  name                     = "acmemonthlyreports001"
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+```
+
+นี่คือ configuration ที่สมบูรณ์และ apply ได้จริง ไม่มี virtual network ไม่มี compute ไม่มี prerequisite อะไรนอกจาก credential ของ Azure ใน environment ของคุณ `azurerm_storage_account` เป็น resource แรกที่ดีด้วยเหตุผลนี้เป๊ะ ๆ — มันไม่ต้องพึ่งพาอะไรให้มีอยู่ก่อน นอกจาก resource group ของมันเอง มีจุดแปลกอันหนึ่งที่ควรรู้ไว้ตั้งแต่ต้น คือ `name` ของ storage account ต้อง **unique ทั่วทั้ง Azure** ไม่ใช่แค่ใน subscription หรือ resource group ของคุณ — ใช้ได้แค่ตัวอักษรพิมพ์เล็กกับตัวเลข ห้ามมีขีด (dash) ซึ่งเป็นเหตุผลที่โปรเจกต์จริงมักจะ generate suffix แบบสุ่มหรือ hash แทนที่จะ hardcode ชื่ออย่างที่เห็นด้านบน
+
+## การจัดวางไฟล์ตามธรรมเนียม
+
+โปรเจกต์จริงแบ่งไฟล์เดียวนั้นออกเป็นหลายไฟล์ ตามธรรมเนียม
+
+```hcl
+# providers.tf
+terraform {
+  required_version = ">= 1.7.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "azurerm" {
+  features {}
+}
+```
+
+```hcl
+# variables.tf
+variable "storage_account_name" {
+  description = "Globally unique name of the storage account to create"
+  type        = string
+  default     = "acmemonthlyreports001"
+}
+```
+
+```hcl
+# main.tf
+resource "azurerm_resource_group" "main" {
+  name     = "example-resources"
+  location = "East US"
+}
+
+resource "azurerm_storage_account" "reports" {
+  name                     = var.storage_account_name
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+```
+
+```hcl
+# outputs.tf
+output "storage_account_id" {
+  description = "Resource ID of the created storage account"
+  value       = azurerm_storage_account.reports.id
+}
+```
+
+ชื่อ `main.tf`, `variables.tf`, `outputs.tf`, `providers.tf` และ `versions.tf` เป็น **ธรรมเนียม ไม่ใช่ข้อบังคับของ Terraform** Terraform ไม่ได้ parse ชื่อไฟล์เลยแม้แต่น้อย มันโหลดไฟล์ `.tf` ทุกไฟล์ใน directory มารวมกันเป็น configuration เดียว และไม่สนใจว่าคุณจะตั้งชื่อไฟล์ว่า `main.tf`, `zzz.tf` หรือ `whatever.tf` resource ใน `outputs.tf` กับ variable ที่มัน reference ใน `main.tf` ทำงานเหมือนกันทุกประการกับตอนที่ทุกอย่างอยู่ในไฟล์เดียว — Terraform สร้าง dependency graph แบบเดียวกันไม่ว่าจะแบ่งไฟล์แบบไหน การแบ่งตามหน้าที่ (provider, variable, resource, output) มีไว้เพื่อให้คนที่เปิด directory รู้ว่าต้องดูตรงไหน ไม่ใช่เพราะ Terraform ต้องการเส้นแบ่งนั้น
+
+<Mermaid title="Terraform โหลดไฟล์ .tf ทุกไฟล์ใน directory มารวมเป็น configuration เดียว" code={installDiagram} />
+
+export const installDiagram = `flowchart TB
+  subgraph dir["Project directory"]
+    main["main.tf"]
+    vars["variables.tf"]
+    outs["outputs.tf"]
+    prov["providers.tf"]
+    ver["versions.tf"]
+  end
+  main --> combined["One combined Terraform configuration"]
+  vars --> combined
+  outs --> combined
+  prov --> combined
+  ver --> combined`;
+
+## นิสัยที่ควรมีตั้งแต่วันแรก: fmt และ validate
+
+มีสองคำสั่งที่ควรรันก่อน commit ทุกครั้ง และไม่มีต้นทุนอะไรเลยแม้จะรันบ่อยแค่ไหน
+
+`terraform fmt` เขียนไฟล์ใหม่ในที่เดิมให้เป็น format มาตรฐานของ Terraform — indentation สม่ำเสมอ เครื่องหมาย `=` จัดแนวตรงกัน spacing สม่ำเสมอ มันแก้แค่ style ไม่แก้ logic
+
+```bash
+terraform fmt
+```
+
+`terraform validate` ตรวจสอบว่า configuration สอดคล้องกันเองภายใน คือ HCL syntax ถูกต้อง argument มี type ตรงกัน variable ที่ reference ถึงมีอยู่จริง มันจับ typo และความผิดพลาดเชิงโครงสร้างได้ก่อนที่คุณจะติดต่อ Azure ด้วยซ้ำ
+
+```bash
+terraform validate
+```
+
+```
+Success! The configuration is valid.
+```
+
+สิ่งที่ `validate` **ไม่ทำ** คือตรวจสอบอะไรกับ Azure API จริง มันไม่รู้เลยว่า subscription ของคุณชน service quota หรือเปล่า ชื่อ storage account ที่คุณเลือกถูกใช้ไปแล้วทั่วโลกหรือไม่ หรือ credential ของคุณมีสิทธิ์สร้างมันจริงหรือเปล่า — ทั้งหมดนี้จะโผล่มาให้เห็นตอนที่คุณรัน `terraform plan` เท่านั้น ซึ่งเป็นคำสั่งแรกที่ติดต่อกับ Azure จริง ๆ configuration หนึ่งอาจผ่าน `validate` ได้อย่างไม่มีปัญหา แต่ยังพังตอน `plan` หรือ `apply` ได้
+
+<Callout title="สรุปหนึ่งบรรทัด">
+ติดตั้ง Terraform ผ่าน **version manager** อย่าง `tenv` (ซึ่งจัดการ OpenTofu กับ Terragrunt ได้ด้วย) แทนที่จะใช้ binary เดียวที่ pin ตายตัว โปรเจกต์จริงแบบขั้นต่ำก็แค่ `provider` block บวก `azurerm_resource_group` บวก resource หนึ่งตัวอย่าง `azurerm_storage_account` ข้างใน — โดยต้องจำไว้ว่าชื่อ storage account ต้อง unique ทั่วทั้ง Azure การแบ่งไฟล์เป็น `main.tf` / `variables.tf` / `outputs.tf` / `providers.tf` / `versions.tf` เป็น **ธรรมเนียมของมนุษย์** — Terraform โหลดไฟล์ `.tf` ทุกไฟล์ใน directory มาเป็น configuration เดียวไม่ว่าจะตั้งชื่อไฟล์ว่าอะไร และ `terraform fmt` (จัดรูปแบบมาตรฐาน) บวก `terraform validate` (ตรวจ syntax และความสอดคล้องภายใน) เป็นนิสัยวันแรกที่ต้นทุนต่ำแต่คุ้มค่า — แต่ `validate` ไม่เคยติดต่อกับ Azure API จริง มันจึงจับ quota limit ชื่อ storage account ที่ถูกใช้ไปแล้ว หรือสิทธิ์ที่ขาดไปไม่ได้ ซึ่งนั่นคือหน้าที่ของ `plan`
+</Callout>
+
+export const quizInstall = [
+  {
+    q: 'Terraform สนใจไหมว่า resource ถูกประกาศใน main.tf หรือไฟล์อื่น',
+    options: [
+      'สนใจ resource ต้องประกาศใน main.tf เท่านั้น',
+      'ไม่สนใจ Terraform โหลดไฟล์ .tf ทุกไฟล์ใน directory มารวมเป็น configuration เดียวไม่ว่าจะตั้งชื่อไฟล์ว่าอะไร การแบ่ง main.tf/variables.tf/outputs.tf เป็นแค่ธรรมเนียมของมนุษย์',
+      'สนใจ แต่ output เท่านั้นที่ต้องอยู่ใน outputs.tf',
+      'ไม่สนใจ แต่ต้องมีไฟล์ manifest ระบุรายชื่อไฟล์ไว้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'terraform fmt ทำอะไร',
+    options: [
+      'ตรวจสอบ configuration กับ Azure API จริง',
+      'เขียนไฟล์ใหม่ในที่เดิมให้เป็น format มาตรฐานของ Terraform (indentation, spacing, การจัดแนว) โดยไม่เปลี่ยน logic',
+      'จัดรูปแบบ state file',
+      'ลบ variable ที่ไม่ได้ใช้ทิ้ง',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'terraform validate ตรวจสอบอะไร',
+    options: [
+      'Azure subscription ชน service quota หรือไม่',
+      'syntax และความสอดคล้องภายในของ configuration เช่น HCL ถูกต้องและ argument มี type ตรงกัน โดยไม่ติดต่อ Azure',
+      'ชื่อ storage account ที่คุณเลือกถูกใช้ไปแล้วทั่วโลกหรือไม่',
+      'credential ของคุณมีสิทธิ์สร้าง resource เหล่านั้นหรือไม่',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมการผ่าน terraform validate ถึงไม่การันตีว่าจะไม่เจอปัญหาฝั่ง Azure จริง',
+    options: [
+      'validate เป็นแค่ linter ของ HCL keyword และข้าม resource block ไปทั้งหมด',
+      'validate ไม่เคยติดต่อกับ Azure API จริง จึงจับปัญหาอย่าง quota limit ชื่อ storage account ที่ถูกใช้ไปแล้วทั่วโลก หรือสิทธิ์ที่ขาดไปไม่ได้ — มีแค่ plan หรือ apply เท่านั้นที่จะเจอปัญหาพวกนี้',
+      'validate ใช้ได้แค่กับ resource ประเภท azurerm_storage_account เท่านั้น',
+      'validate จะ fail เสมอในการรันครั้งแรกไม่ว่า configuration จะเป็นอย่างไร',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/installing-and-project-structure" questions={quizInstall} />
+
+<ProgressTracker client:visible id="foundations/installing-and-project-structure" />

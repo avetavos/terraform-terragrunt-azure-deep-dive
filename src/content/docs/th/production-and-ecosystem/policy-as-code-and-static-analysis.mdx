@@ -1,0 +1,163 @@
+---
+title: 'Policy as Code and Static Analysis'
+description: 'tflint กับ checkov-family scanner จับ HCL ที่ไม่ดีก่อน plan จะรันด้วยซ้ำได้ยังไง และ Sentinel หรือ OPA enforce rule ขององค์กรกับ plan ที่ compute จริงยังไง'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+static analysis tool อย่าง `tflint` กับ `checkov`-family scanner จับ pattern ที่ไม่ดีใน HCL ดิบก่อนที่ `plan` จะรันด้วยซ้ำ ส่วน policy-as-code tool อย่าง Sentinel กับ Open Policy Agent evaluate plan ที่ compute จริงเทียบกับ rule ขององค์กร และ pipeline สำหรับ production ต้องมีทั้งสอง layer ไม่ใช่แค่อันเดียว
+
+## Static analysis คือ check ที่เร็วและถูกก่อน plan รัน
+
+`terraform validate` ยืนยันได้แค่ว่า HCL syntax ถูกต้องและ internal consistent เท่านั้น มันไม่มีความเห็นว่า config นั้นเป็น *ไอเดียที่ดี* หรือเปล่า มี tool เสริมสองตัวที่มาปิด gap นี้ ทั้งคู่รันเสร็จในไม่กี่วินาทีกับ config ดิบ ไม่มีการเรียก Azure API และไม่เกี่ยวกับ state เลย
+
+- **`tflint`** จับ mistake เฉพาะของ provider ที่ `validate` ไม่มีทางรู้ได้ เพราะ `validate` ไม่เข้าใจว่า argument ของ `azurerm_linux_virtual_machine` มีความหมายอะไรกับ Azure จริง ๆ รู้แค่ว่า HCL parse ผ่าน plugin `tflint-ruleset-azurerm` เพิ่ม rule ที่รู้จัก Azure เข้าไปบน core linter เช่น VM size string ที่ invalid, argument ที่ deprecated แต่ยัง parse ผ่านโดยไม่ทำอะไรแล้ว หรือ naming pattern ที่ผิด restriction การตั้งชื่อ resource ของ Azure เอง
+- **security และ misconfiguration scanner** ใน family ของ `checkov`/`tfsec`-successor pattern-match ตัว HCL เองเทียบกับ library ของ configuration ที่รู้กันว่าไม่ดี ไม่เกี่ยวกับว่า run นี้กำลังจะ change อะไรจริง ๆ เลย storage account ที่ตั้ง `allow_nested_items_to_be_public = true`, managed disk ที่ไม่ตั้ง encryption argument, network security group rule ที่เปิด `0.0.0.0/0` ให้ management port ทั้งหมดนี้เป็น finding ที่ scanner ยกได้จากแค่อ่านไฟล์ `.tf` เอง ก่อนที่ `init` หรือ `plan` จะแตะ Azure ด้วยซ้ำ
+
+```bash
+# tflint — Azure-aware static analysis, no Azure API call required
+tflint --init                 # installs the tflint-ruleset-azurerm plugin
+tflint
+
+# example finding
+# Warning: "Standard_D999_v99" is an invalid VM size (azurerm_invalid_instance_type)
+```
+
+```bash
+# checkov — security and misconfiguration scanning against raw HCL
+checkov -d .
+
+# example finding
+# CKV_AZURE_35: "Ensure default network access rule for Storage Accounts is set to deny"
+# FAILED for resource: azurerm_storage_account.main
+```
+
+ทั้งสองตัวรันก่อน `terraform plan` ใน CI pipeline และควร fail pipeline เร็ว ๆ ถ้าเจอปัญหาจริง ไม่มีเหตุผลต้องรอ `plan` ที่ใช้เวลาหลายนาทีกับ Azure state จริง ๆ แค่เพื่อมาเจอทีหลังว่า storage account ถูก config ผิดจนเปิด public blob access
+
+```yaml
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init
+      - run: tflint --recursive
+      - name: Run checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+```
+
+## Policy as code คือการ evaluate ตัว plan เอง
+
+static analysis มองแค่ HCL ตามที่เขียนไว้เท่านั้น มันไม่รู้เลยว่า change ที่ compute จริงจะทำอะไรกับ Azure subscription จริง ๆ **Policy as code** ปิด gap นี้ด้วยการ evaluate output แบบ machine-readable ของ `terraform plan` (หรือ `terragrunt run --all plan`) เทียบกับ policy ที่เขียนไว้ แล้ว block `apply` ถ้า plan นั้นผิด policy
+
+มี tool สอง ตัวที่ครองพื้นที่นี้
+
+- **Sentinel** คือ policy engine ในตัวของ HCP Terraform policy เขียนด้วยภาษาของ Sentinel เอง แล้ว attach เข้ากับ workspace รันอัตโนมัติกับทุก plan ที่ HCP Terraform สร้าง plan ที่ fail policy แบบ `hard-mandatory` จะ apply ไม่ได้เลย
+- **Open Policy Agent (OPA)** ปกติจับคู่กับ **`conftest`** สำหรับ Terraform เป็น alternative แบบ open-source ที่ไม่ผูกกับ provider ไหน เพราะมันรันกับ JSON representation ของ plan (`terraform show -json tfplan`) มันเลยใช้ได้ใน CI system ไหนก็ได้ ไม่ว่าจะใช้ HCP Terraform หรือไม่ GitHub Actions job รัน `conftest` กับ plan JSON ได้เหมือนที่รัน `tflint` กับ HCL
+
+```bash
+# produce a plan, then convert it to JSON for policy evaluation
+terraform plan -out=tfplan
+terraform show -json tfplan > tfplan.json
+
+# conftest evaluates the plan JSON against Rego policies in ./policy
+conftest test tfplan.json --policy ./policy
+
+# example policy failure
+# FAIL - tfplan.json - main - Storage account "app-data" allows public blob access
+```
+
+```yaml
+# an example Rego policy conftest evaluates against the plan JSON
+# policy/storage.rego
+package main
+
+deny[msg] {
+  resource := input.resource_changes[_]
+  resource.type == "azurerm_storage_account"
+  resource.change.after.allow_nested_items_to_be_public == true
+  msg := sprintf("Storage account %s allows public blob access", [resource.name])
+}
+```
+
+ไอเดียร่วมกันของ Sentinel กับ OPA เหมือนกันไม่ว่าทีมจะใช้ตัวไหน rule ที่เขียนไว้อย่างเช่น "ห้าม storage account ไหนเปิด public blob access" หรือ "ทุก resource ต้องมี tag `cost-center`" จะถูก evaluate เทียบกับ *plan ที่เจาะจง* และ plan ที่ผิด rule จะถูก block ไม่ให้ apply ได้ การจับ violation เกิดหลังจาก `plan` compute change เสร็จแล้ว แต่ต้องก่อน `apply` จะรันได้เสมอ
+
+## สอง layer ที่เสริมกัน ไม่ใช่ check ซ้ำ
+
+มันน่าจะคิดว่า `tflint`/`checkov` กับ Sentinel/OPA เป็นสองวิธีที่ทำอย่างเดียวกัน แต่จริง ๆ มัน check คนละอย่างกัน
+
+- static analysis (`tflint`, `checkov`) evaluate **ตัว code เอง** ไม่เกี่ยวกับว่า run นี้กำลัง change อะไรจริง ๆ มันบอกได้ว่า resource block นั้น config ผิด แม้ resource block นั้นจะไม่ได้ถูก apply จริงใน plan รอบนี้เลยก็ตาม
+- policy as code (Sentinel, OPA) evaluate **change ที่ plan ไว้** มัน reference ค่าจริงที่ compute ได้ ซึ่งมีอยู่ก็ต่อเมื่อ plan รันไปแล้วเท่านั้น เช่น "plan นี้ทำลาย production database ตัวนี้โดยเฉพาะ" หรือ "cost รายเดือนรวมที่ plan นี้เพิ่มเกิน threshold" ทั้งสองอย่างนี้รู้ไม่ได้จากแค่อ่าน HCL ดิบ
+
+rule แบบ "block plan ไหนก็ตามที่ทำลาย resource ที่ tag `environment = production` อยู่" เป็นตัวอย่างชัดเจนของสิ่งที่ policy-as-code เท่านั้นที่ enforce ได้ มันขึ้นกับว่า *plan ที่เจาะจงตัวนั้น* เสนอจะทำอะไรจริง ๆ ไม่ใช่ pattern ที่เห็นได้จาก HCL เอง การรันทั้งสอง layer แปลว่า pattern ที่รู้กันว่าไม่ดีถูก reject ในไม่กี่วินาทีก่อน `plan` จะเริ่มด้วยซ้ำ และ rule เฉพาะองค์กรเกี่ยวกับ change ที่เสนอจริงก็ยัง enforce อยู่ก่อน `apply` layer ไหนก็ไม่ทำให้อีก layer หนึ่งซ้ำซ้อน
+
+<Mermaid title="HCL ผ่าน tflint กับ checkov ก่อน plan รัน แล้ว plan ที่ได้ถูก evaluate ด้วย Sentinel หรือ OPA ก่อน apply จะได้รับอนุญาต" code={policyPipelineDiagram} />
+
+export const policyPipelineDiagram = `flowchart LR
+  hcl["HCL configuration"] -->|fast static checks| lint["tflint + checkov"]
+  lint -->|passes| plan["terraform plan"]
+  plan -->|plan JSON| policy["Sentinel or OPA / conftest"]
+  policy -->|passes| apply["terraform apply"]
+  lint -->|fails| block1["Pipeline blocked"]
+  policy -->|fails| block2["Pipeline blocked"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**Static analysis** (`tflint` พร้อม plugin `tflint-ruleset-azurerm` ที่รู้จัก Azure บวกกับ security scanner ใน family `checkov`/`tfsec`-successor) check HCL ดิบเองหา pattern ที่รู้กันว่าไม่ดี เช่น argument ของ resource ที่ invalid, public blob access, ไม่ตั้ง disk encryption ในไม่กี่วินาที ก่อนที่ `terraform plan` จะรันด้วยซ้ำ **Policy as code** (Sentinel บน HCP Terraform หรือ Open Policy Agent แบบ open-source กับ `conftest`) evaluate output แบบ machine-readable ของ `plan` จริง แทน block `apply` เมื่อ change ที่ compute แล้วเจาะจงตัวนั้นผิด rule ขององค์กรที่เขียนไว้ ทั้งสองเป็น layer ที่เสริมกัน static analysis จับ code ที่ไม่ดีโดยไม่เกี่ยวกับว่ากำลัง change อะไร ส่วน policy as code enforce rule ที่มีความหมายก็ต่อเมื่อมี plan จริงอยู่แล้วเท่านั้น เช่น block การทำลาย resource ที่ tag production
+</Callout>
+
+export const quizPolicyStatic = [
+  {
+    q: 'tflint กับ checkov-family scanner จับอะไรได้ที่ terraform validate จับไม่ได้',
+    options: [
+      'ว่า HCL syntax ถูกต้องหรือเปล่า',
+      'mistake เฉพาะของ provider และ security misconfiguration ที่รู้จักกัน เช่น Azure VM size ที่ invalid หรือ storage account ที่เปิด public blob access โดย pattern-match ตัว HCL เอง',
+      'ว่า resource จะถูก replace แทนที่จะ update in place หรือเปล่า',
+      'ว่า plan JSON มี cost-center tag หรือเปล่า',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ความต่างหลักระหว่างสิ่งที่ static analysis tool check กับสิ่งที่ policy-as-code tool check คืออะไร',
+    options: [
+      'ไม่มีความต่างจริง check อย่างเดียวกันสองรอบ',
+      'static analysis evaluate raw HCL code โดยไม่เกี่ยวกับว่ากำลัง change อะไร ส่วน policy as code evaluate plan ที่ compute จริง และ reference ค่าที่มีอยู่ก็ต่อเมื่อ plan รันไปแล้วเท่านั้น',
+      'static analysis รันได้แค่ใน HCP Terraform เท่านั้น ส่วน policy as code รันได้แค่ใน GitHub Actions เท่านั้น',
+      'policy as code แทนที่ความจำเป็นของ terraform plan ไปเลยทั้งหมด',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'policy ไหนต่อไปนี้ enforce ได้ก็ต่อเมื่อ evaluate plan เท่านั้น ไม่ใช่แค่ scan raw HCL',
+    options: [
+      'ทุก azurerm_storage_account resource block ต้องตั้ง tags argument',
+      'resource block ไหนก็ตามห้ามใช้ argument name ที่ deprecated',
+      'block plan ไหนก็ตามที่ทำลาย resource ที่ tag environment = production อยู่ตอนนี้',
+      'managed disk resource block ทุกตัวต้องตั้ง encryption argument',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'tool ไหนคือ alternative แบบ open-source ที่ไม่ผูกกับ provider ของ Sentinel สำหรับ evaluate Terraform plan',
+    options: [
+      'tflint',
+      'checkov',
+      'Open Policy Agent กับ conftest',
+      'terraform validate',
+    ],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/policy-as-code-and-static-analysis" questions={quizPolicyStatic} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/policy-as-code-and-static-analysis" />

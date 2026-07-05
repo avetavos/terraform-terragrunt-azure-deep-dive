@@ -1,0 +1,213 @@
+---
+title: 'Count and For Each'
+description: 'สร้าง resource instance หลายตัวด้วย count กับ for_each meta-argument จุดอ่อนเรื่อง index เลื่อนของ count ที่ทำให้เสี่ยงกับ ordered list และความต่างระหว่าง for expression กับ for_each ที่ไม่ใช่เรื่องเดียวกัน'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+`count` กับ `for_each` คือ meta-argument ที่สร้าง resource block เดียวกันได้มากกว่าหนึ่ง instance โดย `count` อ้างอิงแต่ละ copy ด้วย index ที่เป็นตัวเลข ส่วน `for_each` อ้างอิงด้วย key ที่เสถียร ในขณะที่ `for` expression เป็น syntax คนละเรื่องเลยที่ใช้แปลง collection หนึ่งให้เป็นอีก collection หนึ่ง
+
+## count: copy ที่แทบเหมือนกัน อ้างอิงด้วย index
+
+`count` รับเลขจำนวนเต็มแล้วสร้าง resource ตามจำนวนนั้น นับตั้งแต่ `0` ถึง `count - 1` ภายใน resource block `count.index` เก็บหมายเลขของ instance ปัจจุบัน ซึ่งปกติใช้เลือก element ออกจาก list ที่ขนานกันอยู่ ภายนอก resource แต่ละ instance ถูกอ้างอิงด้วย `[index]` — `azurerm_linux_virtual_machine.web[0]`, `azurerm_linux_virtual_machine.web[1]` ไปเรื่อย ๆ
+
+```hcl
+variable "vm_names" {
+  type        = list(string)
+  description = "Names for the web tier virtual machines, in order"
+  default     = ["web-a", "web-b", "web-c"]
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  count = length(var.vm_names)
+
+  name                = "${var.environment}-${var.vm_names[count.index]}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_D2s_v3"
+  admin_username      = "azureuser"
+
+  network_interface_ids = [
+    azurerm_network_interface.web[count.index].id,
+  ]
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+```
+
+ด้วยค่า default ของ `var.vm_names` ตัวนี้จะสร้าง virtual machine สามเครื่อง `azurerm_linux_virtual_machine.web[0]` ชื่อ `web-a`, `web[1]` ชื่อ `web-b`, และ `web[2]` ชื่อ `web-c` `count.index` คือสิ่งที่ทำให้แต่ละ copy ต่างกันเล็กน้อย — ชื่อที่ต่างกันตรงนี้ และปกติแล้วก็ network interface, disk หรือ IP address ที่ต่างกันในส่วนอื่นของ configuration จริง
+
+## จุดอ่อนของ count: ลบตัวกลางแล้ว index หลังจากนั้นเลื่อนหมด
+
+`count` อ้างอิง instance ด้วยตำแหน่งใน list ล้วน ๆ และตรงนี้เองคือจุดที่มันอันตราย ลบ item ตัวหนึ่งออกจากตรงกลางของ `var.vm_names` แล้ว element ทุกตัวหลังจากนั้นจะเลื่อนลงมาหนึ่งตำแหน่ง Terraform ไม่มีทางรู้เลยว่า "index 1" ตอนนี้หมายถึงชื่อคนละตัวกับก่อนหน้า มันเห็นแค่ว่าค่าที่ index 1 เปลี่ยน และค่าที่ index 2 หายไป
+
+```bash
+# Before: vm_names = ["web-a", "web-b", "web-c"]
+#   azurerm_linux_virtual_machine.web[0] -> web-a
+#   azurerm_linux_virtual_machine.web[1] -> web-b
+#   azurerm_linux_virtual_machine.web[2] -> web-c
+
+# Remove "web-b" from the middle: vm_names = ["web-a", "web-c"]
+#   azurerm_linux_virtual_machine.web[0] -> web-a   (unchanged, untouched)
+#   azurerm_linux_virtual_machine.web[1] -> web-c   (was web-b; name changed -> destroy and recreate)
+#   azurerm_linux_virtual_machine.web[2]            (index no longer exists -> destroy)
+```
+
+โดยแนวคิดแล้ว ควรมีแค่ virtual machine เครื่องเดียวที่ถูกลบตรงนี้ แต่สิ่งที่ Terraform วางแผนจริง ๆ คือ destroy แล้ว recreate `web[1]` (เพราะ attribute name ที่ index นั้นเปลี่ยน และ `name` บังคับให้ replace) กับ destroy ตรง ๆ ของ `web[2]` (เพราะ list สั้นลงและ index นั้นไม่มีอยู่แล้ว) — สอง operation ที่รบกวนระบบเพื่อลบแค่หนึ่ง item และเครื่อง `web-c` ที่รอดก็ถูกสร้างใหม่ทั้งที่ไม่มีอะไรควรเปลี่ยนกับมันเลย นี่คือ foot-gun ของ `count` ที่พบบ่อยที่สุด และจะยิ่งแย่ลงถ้า item ที่ถูกลบอยู่ลึกเข้าไปใน list มากเท่าไหร่ เพราะทุกอย่างหลังจากนั้นจะเลื่อนหมด
+
+## for_each: หนึ่ง instance ต่อหนึ่ง key ไม่ถูกกระทบจากตัวข้าง ๆ
+
+`for_each` รับ map หรือ set ของ string แล้วสร้าง resource instance หนึ่งตัวต่อหนึ่ง key อ้างอิงด้วย key นั้นแทนที่จะเป็นตำแหน่งตัวเลข — `azurerm_linux_virtual_machine.web["primary"]` แทนที่จะเป็น `web[0]` `each.key` กับ `each.value` ใช้งานได้ภายใน resource block และสำหรับ `set(string)` key กับ value คือ string ตัวเดียวกัน
+
+```hcl
+variable "web_server_roles" {
+  type        = set(string)
+  description = "Stable role names for the web tier virtual machines"
+  default     = ["primary", "secondary", "dr"]
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  for_each = var.web_server_roles
+
+  name                = "${var.environment}-web-${each.key}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_D2s_v3"
+  admin_username      = "azureuser"
+
+  network_interface_ids = [
+    azurerm_network_interface.web[each.key].id,
+  ]
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+```
+
+ทีนี้ลอง remove `"secondary"` ออกจาก `var.web_server_roles` Terraform จะ destroy แค่ `azurerm_linux_virtual_machine.web["secondary"]` เท่านั้น ไม่มีอะไรอื่นเลย — `web["primary"]` กับ `web["dr"]` ถูกอ้างอิงด้วย key ของตัวเองซึ่งไม่เคยขยับเลย Terraform เลยไม่มีเหตุผลจะไปแตะมันเลย ไม่มีการเลื่อน เพราะไม่มีอะไรที่เป็น position ให้เลื่อน นี่คือเหตุผลที่ `for_each` เป็นตัวเลือก default ที่ปลอดภัยกว่าสำหรับ collection ของ resource ที่อาจจะโตขึ้นหรือหดลงจากตรงกลาง และ `count` ควรเก็บไว้ใช้กับกรณีที่ต้องการแค่ N copy ที่เหมือนกันจริง ๆ โดยไม่มี identity ที่มีความหมายอะไรมากกว่าตัวเลข
+
+## for expressions: แปลง collection ไม่ใช่สร้าง resource
+
+`for` expression คือ syntax คนละอันที่บังเอิญมีชื่อคล้ายกับ `for_each` และการสับสนสองอย่างนี้เป็นเรื่องที่พลาดง่ายมาก `for_each` (และ `count`) คือ resource meta-argument ที่ตัดสินว่าจะสร้าง resource กี่ instance ส่วน `for` expression คือ comprehension แบบทั่วไป มันรับ list หรือ map ที่มีอยู่แล้ว แล้วสร้าง list หรือ map ใหม่ออกมา และมันปรากฏได้ทุกที่ที่ expression ใช้งานได้ ไม่ว่าจะเป็นใน `local`, `output`, ค่า default ของ variable หรือ argument ของ function
+
+```hcl
+locals {
+  # [for x in list : expr] transforms a list into a new list
+  vm_names_upper = [for name in var.vm_names : upper(name)]
+
+  # {for k, v in map : k => expr} transforms a map into a new map
+  role_to_vm_id = {
+    for role, vm in azurerm_linux_virtual_machine.web : role => vm.id
+  }
+
+  # a for expression can filter with an if clause too
+  prod_only_roles = [for role in var.web_server_roles : role if role != "dr"]
+}
+```
+
+`local.vm_names_upper` ไม่มีอะไรเกี่ยวข้องกับจำนวน virtual machine ที่ถูกสร้างเลย มันแค่แปลงทุก string ใน `var.vm_names` ให้เป็นตัวพิมพ์ใหญ่แล้ว return list ใหม่ออกมา มีประโยชน์ทุกที่ที่ต้องการค่าที่ถูกแปลงแล้วแทนค่าดั้งเดิม `local.role_to_vm_id` ทำหน้าที่เดียวกันกับ map จับคู่แต่ละ `for_each` key จาก `azurerm_linux_virtual_machine.web` กับ `id` ของ instance นั้น ซึ่งเป็นวิธีที่ใช้บ่อยในการส่ง mapping `role -> id` ที่สะอาดไปให้ `output` หรือ resource อื่น ทั้งหมดนี้ไม่ได้สร้างหรือ destroy resource instance ใด ๆ เลย มันแค่จัดรูปข้อมูลที่มีอยู่แล้วใหม่เท่านั้น `for_each` ระดับ resource ที่เห็นข้างบนกับ `for` expression แบบนี้บังเอิญมีตัวอักษรร่วมกันสี่ตัว แต่มันแก้คนละปัญหากันเลย
+
+<Mermaid title="count shifts indices when a middle item is removed; for_each leaves every other key untouched" code={countForEachDiagram} />
+
+export const countForEachDiagram = `flowchart TB
+  subgraph countMeta["count: indexed by position"]
+    cl["list: web-a, web-b, web-c"] --> c0["index 0 = web-a"]
+    cl --> c1["index 1 = web-b"]
+    cl --> c2["index 2 = web-c"]
+    cr["remove web-b from the middle"] --> cs1["index 1 now web-c: destroy and recreate"]
+    cr --> cs2["index 2 no longer exists: destroy"]
+  end
+  subgraph forEachMeta["for_each: indexed by stable key"]
+    fs["set: primary, secondary, dr"] --> f0["key primary"]
+    fs --> f1["key secondary"]
+    fs --> f2["key dr"]
+    fr["remove secondary"] --> fs1["key secondary destroyed only"]
+    fr --> fs2["key primary and key dr untouched"]
+  end`;
+
+<Callout title="The one-line takeaway">
+**`count`** สร้าง resource N copy อ้างอิงด้วย index ตัวเลข (`resource[0]`, `resource[1]`) และจุดอ่อนหลักของมันคือการลบ item ออกจากตรงกลางของ list ที่อยู่เบื้องหลังจะทำให้ index ทุกตัวหลังจากนั้นเลื่อนลงมาหนึ่งตำแหน่ง เปลี่ยน "ลบแค่หนึ่งอย่าง" ให้กลายเป็น cascade ของการ destroy และ recreate ทุกอย่างที่ตามมา **`for_each`** สร้าง instance หนึ่งตัวต่อหนึ่ง key ใน map หรือ set ของ string อ้างอิงด้วย key ที่เสถียรนั้น (`resource["primary"]`) แทนที่จะเป็นตำแหน่ง ทำให้ลบ key เดียวก็ destroy แค่ instance นั้น instance ของ key อื่นทุกตัวไม่ถูกกระทบเลย **`for` expression** (`[for x in list : expr]` หรือ `{for k, v in map : k => expr}`) คือ comprehension แบบทั่วไปที่ไม่เกี่ยวข้องกัน ใช้แปลง collection หนึ่งให้เป็นอีก collection หนึ่ง มันมีชื่อคล้าย `for_each` แต่จุดประสงค์คนละเรื่อง และมันไม่เคยตัดสินว่า resource instance มีกี่ตัว
+</Callout>
+
+export const quizCountForEachAzure = [
+  {
+    q: 'เกิดอะไรขึ้นเมื่อลบ item ออกจากตรงกลางของ list ที่ใช้กับ count',
+    options: [
+      'ไม่มีอะไรเปลี่ยนอย่างอื่น มีแค่ item ที่ถูกลบเท่านั้นที่ destroy',
+      'ทุก item หลังจาก item ที่ถูกลบจะเลื่อนไปที่ index ต่ำลง ทำให้ Terraform วางแผน destroy และ recreate สำหรับ index ที่เลื่อนเหล่านั้น นอกเหนือจากการ destroy item ที่ถูกลบจริง ๆ',
+      'Terraform เปลี่ยน resource ให้ใช้ for_each แทนโดยอัตโนมัติ',
+      'Terraform จะปฏิเสธไม่ plan จนกว่า list จะถูกคืนให้มีความยาวเท่าเดิม',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม for_each ถึงไม่มีปัญหา index เลื่อนแบบที่ count มี',
+    options: [
+      'for_each ไม่รองรับการลบ item เลย',
+      'for_each อ้างอิงแต่ละ instance ด้วย key ที่เสถียรจาก map หรือ set ทำให้ลบ key เดียวกระทบแค่ key นั้น ไม่มี position ให้เลื่อน',
+      'for_each ทำงานได้กับ item แค่ตัวเดียวในแต่ละครั้งเท่านั้น',
+      'for_each สร้าง instance ใหม่ทุกตัวเมื่อมีการเปลี่ยนแปลงใด ๆ เลยไม่มีพฤติกรรมเลื่อนให้ต้องกังวล',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ความต่างระหว่าง for expression กับ for_each resource meta-argument คืออะไร',
+    options: [
+      'เป็น feature เดียวกัน แค่เขียนด้วย syntax คนละแบบ',
+      'for expression แปลง list หรือ map ให้เป็น list หรือ map ใหม่ และปรากฏได้ทุกที่ที่ expression ใช้งานได้ ส่วน for_each คือ resource meta-argument ที่ตัดสินว่าจะสร้าง resource กี่ instance',
+      'for expression ใช้ได้แค่ภายใน argument ของ for_each เท่านั้น',
+      'for_each กำลังจะถูกเลิกใช้แล้วเปลี่ยนไปใช้ for expression แทน',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'instance ที่สร้างด้วย for_each ถูกอ้างอิงจากภายนอก resource block ของมันอย่างไร',
+    options: [
+      'ด้วย index ตัวเลขอย่าง resource[0]',
+      'ด้วย key ที่เสถียรของมัน อย่าง resource["primary"]',
+      'ด้วยลำดับที่มันปรากฏในไฟล์ configuration',
+      'อ้างอิงทีละตัวไม่ได้เลย ต้องอ้างอิงทั้งก้อนเท่านั้น',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="variables-and-data-flow/count-and-for-each" questions={quizCountForEachAzure} />
+
+<ProgressTracker client:visible id="variables-and-data-flow/count-and-for-each" />

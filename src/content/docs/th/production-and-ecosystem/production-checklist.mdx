@@ -1,0 +1,191 @@
+---
+title: 'Production Checklist'
+description: 'checklist สรุปปิดท้ายที่ผูก module ทั้งหมดของ course นี้เข้าเป็น Terraform และ Terragrunt repository เดียวที่พร้อมใช้งานจริงบน Azure'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+setup Terraform และ Terragrunt ที่พร้อมใช้งานจริงบน Azure ไม่ใช่ feature เดียว แต่เป็นผลรวมของทุก practice ที่ course นี้พูดถึงมา ทั้ง remote state, version ที่ pin ไว้, plan ที่ถูก review, secret ที่ป้องกันไว้, static analysis กับ policy gate, unit ที่เรียงลำดับกันตาม dependency, และ test จริง เอามาผูกกันเป็น repository เดียวที่ขับเคลื่อนด้วย CI
+
+## Checklist หนึ่งเหตุผลต่อหนึ่งข้อ
+
+แต่ละข้อด้านล่างย้อนกลับไปหา failure mode จริงที่ lesson ใด lesson หนึ่งของ course นี้ถูกสร้างขึ้นมาเพื่อแก้
+
+- **remote `azurerm` backend พร้อม blob-lease locking ตั้งแต่วันแรก** local state แปลว่า disk เครื่องเดียวคือสำเนาความจริงหนึ่งเดียวของทั้ง Azure footprint และถ้า engineer สองคนรัน `apply` พร้อมกันก็ทำให้มัน corrupt ได้ นี่คือเหตุผลทั้งหมดที่ module State Management มีอยู่
+- **version ของ provider ที่ pin ผ่าน `.terraform.lock.hcl`, version ของ module ที่ pin ไว้กับ tag หรือ version constraint** provider หรือ module ที่ไม่ pin อาจ resolve ไปเป็น major version ใหม่แบบเงียบ ๆ ในครั้งถัดไปที่ `init` รัน เปลี่ยน behavior ที่ไม่มีใครขอกลางคันของ change ที่ไม่เกี่ยวข้องกันเลย
+- **`plan` ถูก review ใน CI ก่อนทุก `apply` โดยจับตาดู resource replacement ที่ไม่คาดคิดโดยเฉพาะ** `-/+` ใน plan แปลว่าทำลายแล้วสร้างใหม่บน resource จริงของ Azure ที่มี state การ review plan แบบ code diff ธรรมดาพลาดบรรทัดที่สำคัญที่สุดไปเลย
+- **ค่า sensitive เก็บนอก Terraform variable และ state ในจุดที่มี secrets-manager data source ให้ใช้ได้ และ Azure RBAC จำกัดคนที่อ่าน state container ได้อย่างเข้มงวด** `sensitive = true` แค่ redact CLI output เท่านั้น การป้องกันจริงคือจำกัด read access ให้ backend และลดสิ่งที่ต้องพิมพ์ลง variable ตั้งแต่แรก
+- **`tflint` กับ security scanner และ ideally policy as code ต่อเข้ากับ CI** static analysis จับ HCL ที่รู้กันว่าไม่ดีในไม่กี่วินาทีก่อน `plan` จะรันด้วยซ้ำ ส่วน policy as code (Sentinel หรือ OPA) evaluate plan ที่ compute จริงเทียบกับ rule ขององค์กรที่มีความหมายก็ต่อเมื่อมี change จริงเกิดขึ้นแล้ว
+- **Terragrunt `dependency` block ขับเคลื่อนลำดับ rollout ของหลาย unit** การแยก infrastructure เป็น unit อิสระ (`vnet`, `vm`, `database`) จะปลอดภัยก็ต่อเมื่อ unit ที่ต้องใช้ output ของอีก unit เช่น subnet ID, ชื่อ resource group ประกาศ dependency นั้นไว้ตรง ๆ เพื่อให้ Terragrunt apply ตามลำดับที่ถูกต้อง แทนที่จะพึ่งให้คนจำเอง
+- **`terraform test` และ `.tftest.hcl` coverage สำหรับ module ที่ทำอะไรไม่ trivial** `validate` check syntax และ `plan` check ว่า Azure ยอมรับ request แต่ทั้งคู่ไม่ assert เลยว่า behavior จริงของ module ถูกต้องหรือเปล่า นี่คือหน้าที่ของ `terraform test`
+
+## Dependency block คือชิ้นที่เรียงลำดับ rollout ของหลาย unit
+
+Terragrunt `dependency` block คือตัวที่ให้ unit หนึ่งใช้ output จริงของอีก unit ได้ โดยที่ unit ทั้งสองไม่ต้องรู้ implementation ภายในของกันและกันเลย unit `vm` ที่ต้องใช้ subnet ที่ unit `vnet` สร้างไว้ ประกาศ dependency นั้นตรง ๆ ใน `terragrunt.hcl` ของตัวเอง
+
+```hcl
+# vm/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+dependency "vnet" {
+  config_path = "../vnet"
+
+  mock_outputs = {
+    subnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/mock-subnet"
+  }
+  mock_outputs_allowed_terraform_commands = ["plan"]
+}
+
+terraform {
+  source = "git::https://github.com/acme-corp/terraform-modules.git//vm?ref=v1.4.0"
+}
+
+inputs = {
+  subnet_id = dependency.vnet.outputs.subnet_id
+}
+```
+
+Terragrunt อ่าน `dependency` block นี้แล้วหาลำดับ apply ที่ถูกต้องเอง `terragrunt run --all apply` จะ apply `vnet` ก่อน อ่าน output `subnet_id` จริงของมันเมื่อมันมีอยู่แล้ว แล้วค่อยรัน `vm` ด้วยค่าจริงนั้นเป็น input ไม่มีใครต้อง hardcode ลำดับหรือต้องจำเองว่าจะ apply unit ไหนก่อนหลัง block `mock_outputs` สำคัญเฉพาะกับ `plan` มันให้ `plan` ของ `vm` รันผ่านได้สะอาดแม้ก่อนที่ `vnet` จะเคยถูก apply เลย โดยใช้ค่า placeholder แทนที่จะ fail เพราะ output จริงยังไม่มีอยู่
+
+## ภาพรวมแบบ end-to-end
+
+เอาทุกข้อมารวมกัน production Terragrunt repository บน Azure จะหน้าตาแบบนี้ `root.hcl` ตัวเดียวอยู่บนสุด ประกาศ shared `remote_state` backend กับ provider `generate` block, unit directory จำนวนหนึ่งอยู่ข้างล่าง `vnet/`, `vm/` (หรือ `aks/`), และ `sql/` เป็น set ขั้นต่ำที่ใช้งานจริงได้ แต่ละตัวมี `terragrunt.hcl` ของตัวเองที่ wire `dependency` block ที่ตัวเองต้องใช้จริง ๆ และ CI pipeline ที่ authenticate ผ่าน OIDC federated credential รัน `terragrunt run --all plan` ทุก pull request และ `terragrunt run --all apply` เฉพาะหลัง merge เข้า main เท่านั้น
+
+```yaml
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/**'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init && tflint --recursive
+      - name: Run checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infra
+
+  plan:
+    needs: static-analysis
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+      - run: terragrunt run --all plan -no-color | tee plan.txt
+      - run: gh pr comment ${{ github.event.pull_request.number }} --body-file plan.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  apply:
+    needs: static-analysis
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+      - run: terragrunt run --all apply --non-interactive
+```
+
+ไม่มีอะไรใน pipeline นี้ที่ใหม่แล้วมาถึงจุดนี้ของ course ทุก stage คือ lesson ที่ผ่านมาแล้ว เอามาประกอบเป็น repository เดียว `vnet`, `vm`/`aks`, และ `sql` เป็น unit อิสระอยู่ใต้ `root.hcl` เดียว `dependency` block ให้ Terragrunt รู้ลำดับจริงระหว่างกัน `tflint` กับ `checkov` fail เร็วก่อนที่จะพยายาม plan ด้วยซ้ำ OIDC แทนที่ client secret ที่เก็บไว้ plan ที่ review แล้ว gate ทุก apply และ `apply` เองก็เก็บไว้เฉพาะหลัง merge หลัง approval gate รันโดย pipeline ไม่ใช่ laptop
+
+<Mermaid title="root.hcl บวก unit ที่เรียงตาม dependency ทั้งหมด deploy ผ่าน CI pipeline ที่ authenticate ด้วย OIDC และ gate apply ไว้หลัง plan ที่ review แล้ว" code={productionRepoDiagram} />
+
+export const productionRepoDiagram = `flowchart TB
+  root["root.hcl (remote_state + provider generate)"] --> vnet["vnet unit"]
+  root --> vm["vm / aks unit"]
+  root --> sql["sql unit"]
+  vnet -->|dependency block| vm
+  vnet -->|dependency block| sql
+  pr["Pull request"] -->|OIDC auth| planj["terragrunt run --all plan"]
+  planj -->|reviewed and merged| applyj["terragrunt run --all apply"]
+  vnet -.-> planj
+  vm -.-> planj
+  sql -.-> planj`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+setup Terraform และ Terragrunt ที่พร้อมใช้งานจริงบน Azure คือผลรวมของ course ทั้งหมดนี้ remote **`azurerm` backend** พร้อม blob-lease locking ตั้งแต่วันแรก provider และ module version **pin** ผ่าน `.terraform.lock.hcl` และ version constraint ทุก `plan` **review ใน CI** ก่อน `apply` โดยจับตาดู `-/+` replacement ที่ไม่คาดคิดโดยเฉพาะ secret ดึงมาจาก secrets manager จริงแทนที่จะนั่งอยู่ใน variable หรือ state container ที่ไม่ป้องกัน **`tflint`/security scanner และ policy as code** ต่อเข้ากับ pipeline Terragrunt **`dependency`** block เรียงลำดับ rollout ของหลาย unit ให้อัตโนมัติ และ **`terraform test`** coverage สำหรับ module ที่คุ้มค่าไว้ใจ รวมกันแล้วคือ `root.hcl` ตัวเดียว unit ที่เรียงตาม dependency อย่าง `vnet`, `vm`/`aks`, และ `sql` และ CI pipeline ที่ authenticate ผ่าน **OIDC** ที่ plan ทุก pull request และ apply เฉพาะหลัง merge เท่านั้น
+</Callout>
+
+export const quizProductionChecklist = [
+  {
+    q: 'ทำไม production Terraform setup ต้องมี remote azurerm backend พร้อม locking ตั้งแต่วันแรก แทนที่จะใช้ local state',
+    options: [
+      'local state อ่านช้ากว่า remote state ในทุกกรณี',
+      'local state แปลว่าเครื่องเดียวถือสำเนาความจริงหนึ่งเดียวของ Azure footprint และ apply พร้อมกันจาก engineer หลายคนทำให้มัน corrupt ได้ถ้าไม่มี locking',
+      'remote backend จำเป็นสำหรับให้ terraform validate รันได้เลย',
+      'local state เก็บ resource ได้ไม่เกินไม่กี่ตัว',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม plan ที่ review ใน CI ถึงต้องจับตาดู resource replacement ที่ไม่คาดคิดโดยเฉพาะ',
+    options: [
+      'เพราะ replacement fail เสมอและเสียเวลา CI',
+      'เพราะ -/+ ใน plan แปลว่า resource ของ Azure ที่มี state จะถูกทำลายแล้วสร้างใหม่ ซึ่งอาจแปลว่ามี data loss หรือ downtime จริงทันทีที่มีคน approve',
+      'เพราะ replacement เป็น change type เดียวที่ Terraform apply สำเร็จได้',
+      'เพราะ plan ที่ review แล้วเกี่ยวข้องแค่กับ environment ที่ไม่ใช่ production เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Terragrunt dependency block ให้อะไรที่การ apply unit ตามลำดับด้วยมือให้ไม่ได้',
+    options: [
+      'มันตัดความจำเป็นของ state file แยกต่อ unit ออกไป',
+      'มันให้ unit หนึ่งใช้ output จริงของอีก unit ได้อัตโนมัติ โดย Terragrunt คำนวณลำดับ apply ที่ถูกต้องเอง แทนที่จะพึ่งให้คนจำลำดับที่ถูกต้องด้วยมือ',
+      'มันแทนที่ความจำเป็นของ remote backend ไปเลยทั้งหมด',
+      'มันให้ unit หลายตัวใช้ terragrunt.hcl ไฟล์เดียวร่วมกันได้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไมค่า sensitive ควรเก็บนอก Terraform variable เมื่อเป็นไปได้ แม้จะมี remote backend ป้องกันไว้แล้วก็ตาม',
+    options: [
+      'เพราะ variable evaluate ช้ากว่า data source เสมอ',
+      'เพราะแม้จะมี remote backend ที่ป้องกันแล้ว ค่าที่ define เป็น variable ก็ยังต้องมีคนพิมพ์ secret จริงลงที่ไหนสักที่ก่อนอยู่ดี ต่างจากการดึงมาจาก secrets manager ผ่าน data source ตอน apply',
+      'เพราะ Terraform variable ใช้ใน resource block ไม่ได้เลย',
+      'เพราะ remote backend ที่ป้องกันแล้วแก้ปัญหา secret ได้ทั้งหมดด้วยตัวเองอยู่แล้ว',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/production-checklist" questions={quizProductionChecklist} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/production-checklist" />

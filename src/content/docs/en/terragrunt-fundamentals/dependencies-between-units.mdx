@@ -1,0 +1,125 @@
+---
+title: 'Dependencies Between Units'
+description: 'How a dependency block lets one unit consume another units outputs across a separate state boundary, and what mock_outputs is for.'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A `dependency` block lets one unit read another unit's outputs across the state boundary that separates them, with `mock_outputs` standing in for the real values until that other unit has actually been applied.
+
+## Why module composition is not enough anymore
+
+The Modules module showed one module's output feeding straight into another module's input, all inside a single `main.tf`, resolved by Terraform in one `plan` against one shared state. That worked because both modules were part of the same Terraform run — Terraform could see the whole dependency graph at once.
+
+Units break that assumption on purpose. A `vnet` unit and a `vm` unit each have their own `terragrunt.hcl` and their own separate state file, applied independently. The `vm` unit still needs the subnet ID that `vnet` creates, but there is no longer a single Terraform run that sees both — the two units are, from Terraform's point of view, completely unrelated projects. Terragrunt needs its own mechanism to hand a value from one unit's state across that boundary into another unit's `inputs`, and that mechanism is the `dependency` block.
+
+## The dependency block: crossing the state boundary
+
+A `dependency` block names another unit by its directory and exposes everything that unit outputs:
+
+```hcl
+# vm/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+dependency "vnet" {
+  config_path = "../vnet"
+}
+
+inputs = {
+  subnet_id = dependency.vnet.outputs.subnet_id
+}
+```
+
+`config_path = "../vnet"` points at the `vnet` unit's directory. Behind the scenes, Terragrunt runs `terragrunt output` against that unit and exposes the result under `dependency.vnet.outputs`, so `dependency.vnet.outputs.subnet_id` reaches straight into whatever the `vnet` unit's Terraform module declared as an `output "subnet_id"`. From the `vm` unit's own `terragrunt.hcl`, this reads almost exactly like consuming a module output inside a single `main.tf` — the difference is invisible in the syntax, even though a completely separate `apply` and a completely separate state file sit behind `dependency.vnet.outputs`.
+
+## mock_outputs: letting plan succeed early
+
+There is an obvious problem with the setup above: the very first time anyone runs `terragrunt plan` on the `vm` unit, the `vnet` unit might not have been applied yet, so `dependency.vnet.outputs.subnet_id` has no real value to read. `mock_outputs` solves exactly that:
+
+```hcl
+dependency "vnet" {
+  config_path = "../vnet"
+
+  mock_outputs = {
+    subnet_id = "mock-subnet-id"
+  }
+
+  mock_outputs_allowed_terraform_commands = ["plan"]
+}
+```
+
+When the real output is not yet available, Terragrunt substitutes the values in `mock_outputs` instead of failing outright, letting `plan` show what the `vm` unit would create even before `vnet` exists. `mock_outputs_allowed_terraform_commands` restricts exactly which commands are allowed to fall back to the mock — listing only `plan` here means an `apply` still fails loudly if the real dependency has not been applied yet, which is exactly the safety net you want: it is fine to preview a plan against a placeholder subnet ID, but never fine to actually create a virtual machine against one.
+
+## Apply order is computed automatically
+
+Nothing in the `vm` unit's `terragrunt.hcl` says "apply `vnet` first." Terragrunt works that out on its own: every `dependency` block it finds while scanning a tree of units becomes an edge in a dependency graph, and when you run an operation across multiple units at once, Terragrunt applies that graph as an ordering constraint — `vnet` is guaranteed to finish applying before `vm` starts, because `vm` declares a `dependency` on it. You never hard-code that ordering or remember to run commands in the right sequence by hand; the next lesson covers the command that actually triggers a multi-unit run.
+
+<Mermaid title="vnet outputs flowing into vm through a dependency block, with mock_outputs bridging the gap before vnet is applied" code={dependencyDiagram} />
+
+export const dependencyDiagram = `flowchart LR
+  vnetunit["vnet unit (own state)"]
+  vnetout["outputs.subnet_id"]
+  dep["vm/terragrunt.hcl dependency vnet"]
+  vminputs["vm inputs.subnet_id"]
+  vnetunit --> vnetout --> dep --> vminputs
+  mock["mock_outputs (plan only, before vnet is applied)"] -.-> dep`;
+
+<Callout title="The one-line takeaway">
+A `dependency` block, such as `dependency "vnet" { config_path = "../vnet" }`, is how one Terragrunt unit reaches across a separate-state boundary that plain module composition cannot cross, exposing another unit's outputs as `dependency.vnet.outputs.subnet_id` for use inside the consuming unit's own `inputs` block. `mock_outputs`, restricted to specific commands via `mock_outputs_allowed_terraform_commands`, lets a `plan` succeed with placeholder values even before the dependency has actually been applied, while still refusing to substitute a mock for a real `apply`. Terragrunt builds a dependency graph from every `dependency` block it finds across a tree of units and uses that graph to compute the correct apply order automatically, so a unit that depends on another is always applied after it without anyone hard-coding that sequence.
+</Callout>
+
+export const quizDependencies = [
+  {
+    q: 'Why is module composition from a single main.tf not enough once vnet and vm are separate Terragrunt units',
+    options: [
+      'Because Terraform outputs are removed once a unit uses Terragrunt',
+      'Because each unit has its own separate state, so there is no single Terraform run that sees both units, and a dependency block is what closes that gap',
+      'Because Terragrunt units cannot use Terraform outputs at all',
+      'Because inputs blocks cannot reference variables',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does mock_outputs let a unit do',
+    options: [
+      'Skip running plan or apply entirely',
+      'Let a plan succeed with placeholder values even before the real dependency has been applied, typically restricted to specific commands',
+      'Permanently replace the real outputs of the dependency unit',
+      'Delete the dependency block after first use',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How does Terragrunt determine the correct apply order across multiple dependent units',
+    options: [
+      'The order units happen to be listed alphabetically on disk',
+      'It builds a dependency graph from every dependency block found across the units and applies that graph as an ordering constraint',
+      'It always applies units in the order their directories were created',
+      'The user must manually specify the order with a flag every single run',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In dependency "vnet" { config_path = "../vnet" }, what does config_path point at',
+    options: [
+      'A Terraform provider configuration file',
+      'The directory of another Terragrunt unit whose outputs should be exposed to this one',
+      'A remote_state backend configuration',
+      'A hook script to run before apply',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="terragrunt-fundamentals/dependencies-between-units" questions={quizDependencies} />
+
+<ProgressTracker client:visible id="terragrunt-fundamentals/dependencies-between-units" />

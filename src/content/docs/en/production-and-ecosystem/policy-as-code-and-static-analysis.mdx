@@ -1,0 +1,163 @@
+---
+title: 'Policy as Code and Static Analysis'
+description: 'How tflint and a checkov-family scanner catch bad HCL before plan even runs, and how Sentinel or OPA enforce organizational rules against the actual planned change.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+Static analysis tools like `tflint` and a `checkov`-family scanner catch known-bad patterns in raw HCL before `plan` ever runs, while policy-as-code tools like Sentinel and Open Policy Agent evaluate the actual computed plan against organizational rules, and a production pipeline needs both layers, not just one.
+
+## Static analysis: fast, cheap checks before plan runs
+
+`terraform validate` only confirms that your HCL is syntactically legal and internally consistent — it has no opinion on whether a configuration is a *good idea*. Two extra tools fill that gap, and both run in seconds against the raw configuration, with no Azure API call and no state involved:
+
+- **`tflint`** catches provider-specific mistakes that `validate` has no way to know about, because `validate` does not understand what `azurerm_linux_virtual_machine` arguments actually mean to Azure — only that the HCL parses. The `tflint-ruleset-azurerm` plugin adds Azure-aware rules on top of the core linter: an invalid VM size string, a deprecated argument that still parses but no longer does anything, or a naming pattern that violates Azure's own resource-naming restrictions.
+- A **security and misconfiguration scanner** in the `checkov`/`tfsec`-successor family pattern-matches the HCL itself against a library of known-bad configurations, entirely independent of what is actually changing in this run. A storage account with `allow_nested_items_to_be_public = true`, a managed disk with no encryption argument set, a network security group rule that opens `0.0.0.0/0` to a management port — these are all findings the scanner can raise by reading the `.tf` files alone, before `init` or `plan` ever touches Azure.
+
+```bash
+# tflint — Azure-aware static analysis, no Azure API call required
+tflint --init                 # installs the tflint-ruleset-azurerm plugin
+tflint
+
+# example finding
+# Warning: "Standard_D999_v99" is an invalid VM size (azurerm_invalid_instance_type)
+```
+
+```bash
+# checkov — security and misconfiguration scanning against raw HCL
+checkov -d .
+
+# example finding
+# CKV_AZURE_35: "Ensure default network access rule for Storage Accounts is set to deny"
+# FAILED for resource: azurerm_storage_account.main
+```
+
+Both of these run before `terraform plan` in a CI pipeline, and both should fail the pipeline fast on a real problem — there is no reason to wait for a multi-minute `plan` against live Azure state just to discover a storage account is misconfigured to allow public blob access.
+
+```yaml
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init
+      - run: tflint --recursive
+      - name: Run checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+```
+
+## Policy as code: evaluating the plan itself
+
+Static analysis only ever looks at the HCL as written — it has no idea what the actual, computed change will do to your Azure subscription. **Policy as code** closes that gap by evaluating the machine-readable output of `terraform plan` (or `terragrunt run --all plan`) against a written policy, and blocking `apply` if the plan violates it.
+
+Two tools dominate this layer:
+
+- **Sentinel** is HCP Terraform's built-in policy engine. Policies are written in Sentinel's own language, attached to a workspace, and run automatically against every plan HCP Terraform produces — a plan that fails a `hard-mandatory` policy simply cannot be applied.
+- **Open Policy Agent (OPA)**, usually paired with **`conftest`** for Terraform, is the provider-agnostic, open-source alternative. Because it runs against a JSON representation of the plan (`terraform show -json tfplan`), it works in any CI system, with or without HCP Terraform — a GitHub Actions job can run `conftest` against the plan JSON exactly like it runs `tflint` against the HCL.
+
+```bash
+# produce a plan, then convert it to JSON for policy evaluation
+terraform plan -out=tfplan
+terraform show -json tfplan > tfplan.json
+
+# conftest evaluates the plan JSON against Rego policies in ./policy
+conftest test tfplan.json --policy ./policy
+
+# example policy failure
+# FAIL - tfplan.json - main - Storage account "app-data" allows public blob access
+```
+
+```yaml
+# an example Rego policy conftest evaluates against the plan JSON
+# policy/storage.rego
+package main
+
+deny[msg] {
+  resource := input.resource_changes[_]
+  resource.type == "azurerm_storage_account"
+  resource.change.after.allow_nested_items_to_be_public == true
+  msg := sprintf("Storage account %s allows public blob access", [resource.name])
+}
+```
+
+The shared idea behind Sentinel and OPA is the same regardless of which one a team uses: a written rule such as "no storage account may allow public blob access" or "every resource must carry a `cost-center` tag" is evaluated against a *specific plan*, and a plan that violates the rule is blocked from being applied — the violation is caught after `plan` computes the change, but strictly before `apply` is allowed to run.
+
+## Two complementary layers, not one redundant check
+
+It is tempting to treat `tflint`/`checkov` and Sentinel/OPA as two ways of doing the same thing, but they check fundamentally different things:
+
+- Static analysis (`tflint`, `checkov`) evaluates the **code itself**, independent of what is actually changing in this run. It can tell you a resource block is misconfigured even if that resource block never actually gets applied in this particular plan.
+- Policy as code (Sentinel, OPA) evaluates the **planned change** — it can reference real, computed values that only exist once a plan has actually been run, such as "this specific plan replaces a production database" or "the total monthly cost this plan adds exceeds a threshold," neither of which is knowable by reading the raw HCL alone.
+
+A rule like "block any plan that destroys a resource tagged `environment = production`" is a clear example of something only policy-as-code can enforce — it depends entirely on what a *specific plan* actually proposes to do, not on any pattern visible in the HCL by itself. Running both layers means known-bad patterns are rejected in seconds before `plan` ever starts, and organization-specific rules about the actual proposed change are still enforced right before `apply` — neither layer makes the other redundant.
+
+<Mermaid title="HCL passes through tflint and checkov before plan runs; the resulting plan is then evaluated by Sentinel or OPA before apply is allowed" code={policyPipelineDiagram} />
+
+export const policyPipelineDiagram = `flowchart LR
+  hcl["HCL configuration"] -->|fast static checks| lint["tflint + checkov"]
+  lint -->|passes| plan["terraform plan"]
+  plan -->|plan JSON| policy["Sentinel or OPA / conftest"]
+  policy -->|passes| apply["terraform apply"]
+  lint -->|fails| block1["Pipeline blocked"]
+  policy -->|fails| block2["Pipeline blocked"]`;
+
+<Callout title="The one-line takeaway">
+**Static analysis** (`tflint`, with the Azure-aware `tflint-ruleset-azurerm` plugin, plus a `checkov`/`tfsec`-successor security scanner) checks the raw HCL itself for known-bad patterns — invalid resource arguments, public blob access, missing disk encryption — in seconds, before `terraform plan` ever runs. **Policy as code** (Sentinel on HCP Terraform, or the open-source Open Policy Agent with `conftest`) instead evaluates the machine-readable output of an actual `plan`, blocking `apply` when a specific, computed change violates a written organizational rule. The two are complementary layers: static analysis catches bad code independent of what is changing, while policy as code can enforce rules that only make sense once a real plan exists, such as blocking the destruction of a production-tagged resource.
+</Callout>
+
+export const quizPolicyStatic = [
+  {
+    q: 'What can tflint and a checkov-family scanner catch that terraform validate cannot',
+    options: [
+      'Whether the HCL is syntactically legal',
+      'Provider-specific mistakes and known security misconfigurations, such as an invalid Azure VM size or a storage account allowing public blob access, by pattern-matching the HCL itself',
+      'Whether a resource will be replaced instead of updated in place',
+      'Whether the plan JSON contains a cost-center tag',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the core difference between what static analysis tools check and what policy-as-code tools check',
+    options: [
+      'There is no real difference, they check the same thing twice',
+      'Static analysis evaluates the raw HCL code independent of what is changing, while policy as code evaluates the actual computed plan and can reference values that only exist once a plan has run',
+      'Static analysis only runs in HCP Terraform, while policy as code only runs in GitHub Actions',
+      'Policy as code replaces the need for terraform plan entirely',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Which of these policies could only be enforced by evaluating a plan, not by scanning raw HCL alone',
+    options: [
+      'Every azurerm_storage_account resource block must set a tags argument',
+      'No resource block may use a deprecated argument name',
+      'Block any plan that destroys a resource currently tagged environment = production',
+      'Every managed disk resource block must set an encryption argument',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'Which tool is the open-source, provider-agnostic alternative to Sentinel for evaluating a Terraform plan',
+    options: [
+      'tflint',
+      'checkov',
+      'Open Policy Agent with conftest',
+      'terraform validate',
+    ],
+    answer: 2,
+  },
+];
+
+<Quiz client:visible id="production-and-ecosystem/policy-as-code-and-static-analysis" questions={quizPolicyStatic} />
+
+<ProgressTracker client:visible id="production-and-ecosystem/policy-as-code-and-static-analysis" />

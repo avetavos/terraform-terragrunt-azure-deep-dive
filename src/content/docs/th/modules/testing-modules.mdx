@@ -1,0 +1,162 @@
+---
+title: 'Testing Modules'
+description: 'confidence สามระดับที่ Terraform ให้คุณก่อนที่อะไรจะพังใน production และวิธีเขียน assertion จริงด้วย terraform test'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`terraform validate`, `terraform plan` และ `terraform test` แต่ละตัวตอบคำถามคนละข้อ — "syntax ถูกไหม" "Azure ยอมรับไหม" และ "มันทำงานตามที่คาดไว้ไหม" — การเอาตัวใดตัวหนึ่งมาแทนอีกสองตัวคือวิธีที่ module พังไปถึง production ทั้ง ๆ ที่ผ่านสีเขียวมาตลอดทาง
+
+## confidence สามระดับ และทำไมมันแทนกันไม่ได้
+
+มันน่าล่อใจที่จะมองว่า "ไม่มี error" แปลว่า "มันทำงานได้" แต่จริง ๆ แล้ว Terraform ให้ check สามแบบที่ต่างกันชัดเจน แต่ละแบบจับ mistake คนละประเภท และแต่ละแบบที่ผ่านก็แทบไม่บอกอะไรเลยเกี่ยวกับแบบที่อยู่ถัดไป
+
+**`terraform validate`** เช็คแค่ HCL syntax กับความสอดคล้องภายในของ configuration เท่านั้น มันยืนยันว่า block ของคุณเขียนถูกรูปแบบ argument type ตรงกับที่ resource ต้องการ และ reference อย่าง `var.name` หรือ `module.storage.primary_blob_endpoint` ชี้ไปที่สิ่งที่มีอยู่จริง ที่สำคัญคือ `validate` ไม่คุยกับ Azure เลย มันไม่มีทางรู้ว่า VM size ที่คุณพิมพ์ไปมีอยู่จริงใน region ที่คุณเลือกหรือเปล่า หรือชื่อ storage account ที่คุณตั้งถูกใช้ไปแล้วโดย subscription คนอื่น configuration หนึ่งสามารถผ่าน `validate` ได้อย่างสะอาดหมดจด แล้วยังพังทันทีที่มันแตะ Azure API จริง
+
+```bash
+terraform validate
+# Success! The configuration is valid.
+#
+# ...but validate has no idea whether "Standard_ZZZ99" is a real VM size,
+# or whether "acmeapplogs" is already taken as a storage account name.
+```
+
+**`terraform plan`** ก้าวไปอีกขั้นจริง ๆ มัน authenticate เข้า Azure resolve data source และถาม provider ว่าจะเกิดอะไรขึ้น ตรงนี้คือจุดที่ mistake เรื่อง region กับ SKU, ชื่อชนกัน, หรือปัญหา quota จะโผล่ขึ้นมาจริง เพราะ `plan` คุยกับ Azure API จริงและแสดง diff ที่มันจะ apply สิ่งที่ `plan` **ไม่** ทำคือ assert อะไรเลยว่า diff นั้น *ถูกต้อง* มันแสดง plan ให้คุณดู มันไม่เช็ค plan นั้นกับสิ่งที่คุณคาดหวังไว้ ไม่มีอะไรหยุด `plan` จากการสำเร็จ ในขณะที่มันเงียบ ๆ สร้าง storage account ที่มี replication type ผิด เพราะไม่มีใครบอก Terraform ว่า "ถูกต้อง" สำหรับ module นี้แปลว่าอะไร
+
+```bash
+terraform plan
+# Plan: 1 to add, 0 to change, 0 to destroy.
+#
+# This confirms Azure accepts the request. It does not confirm the
+# storage account it is about to create actually has the settings
+# this module was supposed to guarantee.
+```
+
+**`terraform test`** คือตัวเดียวที่ assert อะไรบางอย่างจริง ๆ มันคือ native testing framework ของ Terraform และเป็นตัวเดียวในสามตัวนี้ที่ encode ว่า "นี่คือ behavior เฉพาะที่ฉันคาดหวัง" แล้ว fail ทันทีที่ความเป็นจริงต่างจากมัน ในขณะที่ `validate` เช็ครูปแบบ และ `plan` เช็คว่า Azure ยอมรับ request นั้น `test` เช็คผลลัพธ์
+
+## native test framework ของ Terraform: .tftest.hcl และ terraform test
+
+test file อยู่ใน extension `.tftest.hcl` ตามธรรมเนียมมักอยู่ใต้ directory `tests/` และรันด้วยคำสั่ง `terraform test` test file ประกอบด้วย block สองแบบ: `variables` block ระดับบนสุดที่ให้ input value เฉพาะสำหรับ test และ `run` block หนึ่งตัวหรือมากกว่า แต่ละตัวรัน configuration แล้วเช็คด้วย `assert` block หนึ่งตัวหรือมากกว่า
+
+```hcl
+# tests/storage_account_name.tftest.hcl
+variables {
+  resource_group_name = "rg-app-logs"
+}
+
+run "creates_storage_account_with_expected_name" {
+  command = plan
+
+  variables {
+    name = "acmeapplogs"
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.name == "acmeapplogs"
+    error_message = "Storage account name did not match the name variable passed in"
+  }
+}
+```
+
+`assert` block แต่ละตัวต้องการสองอย่างเป๊ะ ๆ: `condition` ที่ต้อง evaluate ออกมาเป็น `true` และ `error_message` string ที่โชว์ให้คุณเห็นทันทีที่ condition นั้นเป็น `false` `variables` block ข้างใน `run` block override หรือให้ value ที่ scope เฉพาะ run นั้น ในขณะที่ `variables` block ระดับบนสุดตั้ง default ที่แชร์กันทุก `run` block ใน file — ตัวอย่างนี้คือ module `storage-account` จากบทก่อนหน้าในหน่วยนี้เป๊ะ ๆ ที่ถูกส่ง `name = "acmeapplogs"` เข้าไป แล้ว assert ว่ามันสร้าง resource ที่มีชื่อนั้นจริง
+
+## command argument: plan กับ apply
+
+`run` block ทุกตัวมี `command` argument และการเลือกระหว่างสองค่าของมัน คือ `plan` กับ `apply` เป็นการตัดสินใจที่สำคัญที่สุดใน test file
+
+`command = plan` เร็วและไม่สร้าง resource จริงเลย Terraform สร้าง plan และ `assert` block ของคุณเช็ค planned value — นี่คือสิ่งที่ตัวอย่างข้างบนทำเป๊ะ ๆ เพราะ `name` มาจาก variable ตรง ๆ และรู้ค่าได้ก่อนที่จะมี apply ใด ๆ เกิดขึ้น ใช้ `command = plan` สำหรับ test case ส่วนใหญ่: อะไรก็ตามที่คุณ verify ได้จาก configuration อย่างเดียว อย่าง "input นี้ทำให้เกิด attribute ที่คาดไว้ไหม" ควรอยู่ตรงนี้
+
+`command = apply` สร้าง resource จริงใน Azure จริง ๆ assert กับ attribute จริงที่มันได้ผลลัพธ์ออกมา แล้ว teardown ทุกอย่างอีกครั้งเมื่อ test file รันจบ นี่คือ integration testing จริง ๆ — มันเป็นวิธีเดียวที่ assert กับ value ที่ Azure คำนวณให้คุณได้ เช่น endpoint ที่ถูก generate หรือ resource ID เพราะ value นั้นไม่มีอยู่จริงจนกว่าจะมีการ apply เกิดขึ้นจริง
+
+```hcl
+# tests/storage_account_endpoint.tftest.hcl
+variables {
+  name                = "acmeapplogs"
+  resource_group_name = "rg-app-logs"
+}
+
+run "creates_storage_account_with_working_endpoint" {
+  command = apply
+
+  assert {
+    condition     = output.primary_blob_endpoint != ""
+    error_message = "Expected a non-empty primary_blob_endpoint after apply"
+  }
+}
+```
+
+`command = apply` ช้ากว่าและมีค่าใช้จ่ายจาก cloud resource จริงในช่วงสั้น ๆ เพราะ Terraform provision แล้วก็ destroy มันจริง ๆ เป็นส่วนหนึ่งของการรัน test ใช้มันอย่างตั้งใจ สำหรับ assertion ที่ต้องการ Azure-computed value จริง ๆ เท่านั้น ไม่ใช่เป็นค่า default ของทุก `run` block ใน file
+
+<Mermaid title="Three levels of confidence, each catching a different class of mistake" code={testingLaddersDiagram} />
+
+export const testingLaddersDiagram = `flowchart TB
+  subgraph rung1["terraform validate"]
+    v1["HCL syntax and internal consistency"] --> v2["never talks to Azure"]
+  end
+  subgraph rung2["terraform plan"]
+    p1["talks to the real Azure API"] --> p2["shows the diff, asserts nothing about it"]
+  end
+  subgraph rung3["terraform test"]
+    t1["run blocks with assert"] --> t2["condition and error_message enforce expected behavior"]
+  end
+  rung1 -->|catches malformed config| rung2
+  rung2 -->|catches provider-side errors| rung3
+  rung3 -->|catches wrong results| done["confidence the module actually works"]`;
+
+<Callout title="The one-line takeaway">
+`terraform validate`, `terraform plan` และ `terraform test` คือ check สามแบบที่ต่างกันจริง ๆ ไม่ใช่ของแทนกันได้: `validate` เช็คแค่ HCL syntax กับความสอดคล้องภายใน และไม่คุยกับ Azure เลย `plan` คุยกับ Azure API จริงและโชว์ provider-side error แต่ไม่ assert ว่าผลลัพธ์ถูกต้องไหม และ `terraform test` คือตัวเดียวที่ assert behavior เฉพาะที่คาดไว้จริง ๆ ผ่าน `.tftest.hcl` file, `run` block และ `assert` block ที่มี `condition` กับ `error_message` ภายใน `run` block, `command = plan` เร็ว ไม่สร้าง resource จริง และครอบคลุม test case ส่วนใหญ่ ในขณะที่ `command = apply` สร้างและ destroy resource จริง เพื่อให้ assert กับ value ที่ Azure คำนวณให้หลัง apply จริงเท่านั้น — integration testing จริงแลกมากับความเร็วและ cloud resource ที่มีอยู่จริงในช่วงสั้น ๆ
+</Callout>
+
+export const quizTestingModules = [
+  {
+    q: 'terraform validate จับอะไรได้ และจับอะไรไม่ได้เลย',
+    options: [
+      'มันเช็คได้ทุกอย่าง รวมถึง VM size ที่เลือกมีอยู่จริงใน Azure region นั้นไหม',
+      'มันเช็คแค่ HCL syntax กับความสอดคล้องภายในของ configuration และไม่คุยกับ Azure เลย จึงจับอย่าง VM size ที่ไม่มีจริงหรือชื่อ storage account ที่ถูกใช้ไปแล้วไม่ได้',
+      'มันคุยกับ Azure API จริงเหมือน plan จึงจับ error แบบเดียวกับที่ plan จับได้',
+      'มันเช็คแค่ว่า resource name ไม่ซ้ำกันทั้ง subscription เท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม terraform plan ที่ผ่านแบบสะอาดหมดจดถึงไม่รับประกันว่า module ทำงานได้ตามที่ตั้งใจจริง',
+    options: [
+      'เพราะ plan ไม่คุยกับ Azure เลย จึงไม่พิสูจน์อะไร',
+      'เพราะ plan คุยกับ Azure และโชว์ diff แต่ไม่ assert ว่า resource ที่ได้ตรงกับ behavior เฉพาะที่คาดไว้จริงไหม',
+      'เพราะ plan จะ fail เสมอในครั้งแรกที่รันกับ resource group ใหม่',
+      'เพราะ plan ทำงานได้เฉพาะกับ resource ที่มีอยู่ใน state แล้วเท่านั้น',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน run block ของ .tftest.hcl ความต่างจริง ๆ ระหว่าง command = plan กับ command = apply คืออะไร',
+    options: [
+      'ไม่มีความต่างจริง ทั้งคู่สร้าง resource จริงใน Azure เหมือนกัน',
+      'command = plan เร็วและไม่สร้าง resource จริง เช็คแค่ planned value ในขณะที่ command = apply สร้าง resource จริง assert กับ attribute จริงที่ได้ แล้ว teardown มันทีหลัง',
+      'command = plan ทำงานได้แค่กับ run block ตัวแรกใน file เท่านั้น',
+      'command = apply ต้องมีในทุก run block ไม่งั้น test file parse ไม่ผ่าน',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม test ที่ต้องการ assert กับ value อย่าง primary_blob_endpoint ถึงต้องใช้ command = apply แทน command = plan',
+    options: [
+      'เพราะ output value ไม่มีให้ใช้ภายใต้ command = plan เลยไม่ว่ากรณีไหน',
+      'เพราะ primary_blob_endpoint ถูกคำนวณโดย Azure และไม่มีอยู่จริงจนกว่าจะมี apply จริงเกิดขึ้น',
+      'เพราะ command = apply เร็วกว่า command = plan สำหรับ assertion แบบนี้',
+      'เพราะ assert block ใช้ไม่ได้เลยภายใน run block ที่เป็น command = plan',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="modules/testing-modules" questions={quizTestingModules} />
+
+<ProgressTracker client:visible id="modules/testing-modules" />

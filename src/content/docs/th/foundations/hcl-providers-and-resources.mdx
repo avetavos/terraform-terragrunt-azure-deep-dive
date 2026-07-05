@@ -1,0 +1,221 @@
+---
+title: 'HCL, Provider และ Resource'
+description: 'HCL block syntax, terraform block กับ provider block, resource block เทียบกับ data block, features block ที่ azurerm ต้องมี และวิธีที่ Terraform สร้าง dependency graph'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+configuration ของ Terraform ทุกส่วนคือ **block** เขียนด้วย HCL — `terraform`, `provider`, `resource` และ `data` คือสี่ตัวที่คุณจะเขียนบ่อยที่สุด รวมกันแล้วมันบอก Terraform ว่าต้องโหลด plugin อะไร คุยกับ Azure ยังไง ต้องสร้างอะไร และต้องอ่านอะไร
+
+## HCL block syntax
+
+HCL (HashiCorp Configuration Language) สร้างจาก block รูปแบบทั่วไปคือ block type ตามด้วย label ที่ครอบด้วยเครื่องหมายคำพูดศูนย์ตัวขึ้นไป แล้วปิดท้ายด้วย body ของ argument ใน `{}`
+
+```hcl
+block_type "label1" "label2" {
+  argument = value
+}
+```
+
+อย่าง `resource` block มี label สองตัว ส่วน `provider` block มี label ตัวเดียว comment ใช้ `#` หรือ `//` สำหรับบรรทัดเดียว และ `/* */` สำหรับหลายบรรทัด string รองรับ interpolation ด้วย `${...}` แต่ถ้าอ้างอิงค่าอื่นตรง ๆ (`name = azurerm_resource_group.main.name`) ไม่ต้องครอบด้วย `${}` — syntax แบบนั้นใช้เฉพาะตอนอยู่ข้างใน string ที่ยาวกว่านั้น
+
+```hcl
+# A single-line comment.
+// Also a single-line comment.
+
+resource "azurerm_resource_group" "main" {
+  name     = "example-resources-${var.environment}" # interpolation inside a string
+  location = "East US"
+}
+```
+
+## terraform block กับ provider block
+
+`terraform` block คือการตั้งค่า Terraform เอง ว่า Terraform เวอร์ชันไหนรัน configuration นี้ได้ และต้องใช้ provider อะไรบ้าง รวมถึงแต่ละ provider มาจากไหนและเวอร์ชันไหนที่รับได้
+
+```hcl
+terraform {
+  required_version = ">= 1.7.0"
+
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+```
+
+`source` คือ registry address ของ provider (`hashicorp/azurerm` ชี้ไปที่ Azure provider ตัวจริงบน Terraform Registry) ส่วน `version` เป็น constraint ไม่ใช่การ pin ตายตัว — `~> 4.0` อนุญาตทุก release ในสาย `4.x`
+
+จากนั้น `provider` block ตั้งค่า instance หนึ่งของ provider ที่ประกาศไว้ด้านบน สำหรับ `azurerm` ตรงนี้คือที่อยู่ของ subscription — และมันมี quirk ที่รู้กันดีที่ควรพูดถึงตรง ๆ คือ `features {}` block เป็นสิ่งที่**จำเป็นต้องมี** แม้จะว่างเปล่าก็ตาม การไม่ใส่มันเลยเป็นหนึ่งใน error แรก ๆ ที่คนใหม่มักเจอกับ provider ตัวนี้
+
+```hcl
+provider "azurerm" {
+  features {}
+
+  subscription_id = "00000000-0000-0000-0000-000000000000"
+}
+```
+
+## resource block: สอง label ที่มีความหมาย และทำไม Azure ต้องมี resource group
+
+`resource` block คือวิธีบอก Terraform ว่า "สิ่งนี้ควรมีอยู่" มันมี label สองตัวเสมอ resource เกือบทุกตัวใน Azure ต้องอยู่ภายใน **resource group** — เป็น container/scoping construct ที่รวม resource ที่เกี่ยวข้องกันไว้ด้วยกัน คุม lifecycle ของมันเป็นก้อนเดียว และไม่มี equivalent ตรง ๆ ใน AWS หรือ GCP (การจัดกลุ่มด้วย tag ใน AWS ไม่มีการบังคับใด ๆ อยู่เบื้องหลัง ส่วน GCP project ก็เป็น boundary ที่หนักกว่ามาก) นั่นทำให้ `azurerm_resource_group` เป็น resource แรกในเกือบทุก configuration ของ Azure
+
+```hcl
+resource "azurerm_resource_group" "main" {
+  name     = "example-resources"
+  location = "East US"
+}
+```
+
+- label แรก `azurerm_resource_group` คือ **type** ของ resource ถูกกำหนดโดย provider และเป็นตัวตัดสินว่า argument ไหนใช้ได้ และ Azure API ตัวไหนที่ Terraform จะเรียก
+- label ที่สอง `main` คือ **name** ที่คุณเลือกเอง มันมีความหมายแค่ภายใน configuration นี้เท่านั้น
+
+รวมกันแล้วทั้งสองตัวคือ **address** ของ resource นั้น คือ `azurerm_resource_group.main` ซึ่งเป็นวิธีอ้างอิง attribute ของ resource นี้จากที่ไหนก็ได้ใน configuration ของคุณ
+
+```hcl
+resource "azurerm_linux_virtual_machine" "web" {
+  name                = "web-vm"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_B1s"
+  admin_username      = "adminuser"
+
+  network_interface_ids = [
+    azurerm_network_interface.web.id, # defined elsewhere in this configuration
+  ]
+
+  admin_ssh_key {
+    username   = "adminuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+```
+
+การอ้างอิง `azurerm_resource_group.main.name` และ `azurerm_resource_group.main.location` จาก VM resource คือ **implicit dependency** แบบเป๊ะ ๆ ที่สร้าง dependency graph ของ Terraform ตามที่จะพูดถึงด้านล่าง — ตอนนี้ Terraform รู้แล้วว่า resource group ต้องมีอยู่ก่อนถึงจะสร้าง VM ได้
+
+## data block: อ่านโดยไม่เป็นเจ้าของ
+
+`data` block อ่านข้อมูลของสิ่งที่มีอยู่แล้ว คือ infrastructure ที่ configuration นี้ไม่ได้จัดการและจะไม่มีวันสร้าง อัปเดต หรือลบ มันคือ read-only lookup ของ Terraform
+
+```hcl
+data "azurerm_resource_group" "existing" {
+  name = "networking-shared"
+}
+
+resource "azurerm_virtual_network" "app" {
+  name                = "app-vnet"
+  address_space       = ["10.0.0.0/16"]
+  resource_group_name = data.azurerm_resource_group.existing.name
+  location            = data.azurerm_resource_group.existing.location
+}
+```
+
+`data.azurerm_resource_group.existing.location` อ่านเหมือน resource address เป๊ะ ๆ แค่มี `data.` นำหน้า — label type กับ name ทำงานแบบเดียวกัน แต่ไม่มีอะไรจาก `data` block ที่จะโผล่เป็น create, update หรือ destroy ใน plan เลย มันมีหน้าที่อ่านอย่างเดียว
+
+## Dependency graph
+
+Terraform ไม่ได้ apply configuration ของคุณเรียงจากบนลงล่างตามที่เขียนไว้ แต่มันสร้าง **DAG** (directed acyclic graph) ของทุก resource และ data source แล้วใช้กราฟนั้นหาลำดับที่ถูกต้อง — พร้อมทั้งดูว่า resource ตัวไหนเป็นอิสระจากกันพอที่จะสร้าง **พร้อมกัน** ได้
+
+edge ในกราฟนั้นมาจากสองที่
+
+- **Implicit dependency** เมื่อไหร่ที่ argument ของ resource หนึ่งอ้างอิง attribute ของอีก resource หนึ่ง (เช่น VM อ้างอิง `azurerm_resource_group.main.name` หรือ subnet อ้างอิงชื่อของ virtual network) Terraform จะสรุปเองว่า resource ที่ถูกอ้างอิงต้องมีอยู่ก่อน
+- **Explicit dependency** คือ `depends_on` บน resource ใช้ตอนที่ resource หนึ่งขึ้นกับอีกตัวจริง ๆ แต่ความสัมพันธ์นั้นไม่โผล่ผ่าน attribute reference ไหนเลย (เช่น role assignment ที่ต้องมีอยู่ก่อนแอปเริ่มพึ่งพามัน โดยไม่มี argument เชื่อมกันตรง ๆ)
+
+```hcl
+resource "azurerm_resource_group" "main" {
+  name     = "example-resources"
+  location = "East US"
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "example-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.main.location # implicit dependency on azurerm_resource_group.main
+  resource_group_name = azurerm_resource_group.main.name
+}
+
+resource "azurerm_subnet" "app" {
+  name                 = "app-subnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name # implicit dependency on azurerm_virtual_network.main
+  address_prefixes     = ["10.0.1.0/24"]
+}
+```
+
+<Mermaid title="Terraform สร้าง DAG จาก reference แล้ว apply กิ่งที่เป็นอิสระต่อกันพร้อมกัน" code={dagDiagram} />
+
+export const dagDiagram = `flowchart LR
+  rg["azurerm_resource_group.main"] --> vnet["azurerm_virtual_network.main"] --> subnet["azurerm_subnet.app"] --> vm["azurerm_linux_virtual_machine.web"]
+  storage["azurerm_storage_account.logs (unrelated, applies in parallel)"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+configuration แบบ HCL ประกอบด้วย **block**: `terraform` ประกาศ provider และ version ที่ต้องใช้, `provider` ตั้งค่าว่า Terraform คุยกับ Azure ยังไง (และ `azurerm` ต้องมี `features {}` block แม้จะว่างเปล่าก็ตาม), `resource` block (ระบุด้วย **type** และ **name** ที่คุณเลือก รวมกันเป็น **address**) ประกาศสิ่งที่ Terraform ควรสร้างและจัดการ — เกือบทุกครั้งอยู่ภายใน `azurerm_resource_group` ซึ่งเป็น scoping construct ที่มีเฉพาะใน Azure — ส่วน `data` block มีหน้าที่ **อ่าน** infrastructure ที่มีอยู่แล้วเท่านั้นโดยไม่เป็นเจ้าของมัน Terraform สร้าง **dependency graph (DAG)** จาก implicit reference กับ `depends_on` แบบ explicit แล้ว apply resource ที่เป็นอิสระต่อกันพร้อมกัน
+</Callout>
+
+export const quizHcl = [
+  {
+    q: 'ใน `resource "azurerm_linux_virtual_machine" "web" { ... }` สอง label นี้คืออะไร',
+    options: [
+      'ทั้งสอง label เป็นชื่ออะไรก็ได้ ไม่มีความหมายพิเศษ',
+      'label แรกคือ resource type (กำหนดโดย provider) ส่วน label ที่สองคือ name ที่คุณเลือกเอง รวมกันเป็น resource address',
+      'label แรกคือ Azure region ส่วนที่สองคือ resource group',
+      'label แรกคือชื่อ provider ส่วนที่สองคือ resource type',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทำไม features block ของ azurerm provider ถึงจำเป็นต้องมีแม้จะว่างเปล่า',
+    options: [
+      'จริง ๆ แล้วไม่จำเป็น เป็นแค่ convention ที่บางทีมทำตามกัน',
+      'azurerm provider ต้องมี features block เพื่อ initialize พฤติกรรมระดับ provider และ Terraform จะ error ถ้าไม่มีมัน แม้จะไม่มีอะไรเฉพาะเจาะจงให้ตั้งค่าข้างในก็ตาม',
+      'จำเป็นเฉพาะตอนใช้ data block เท่านั้น',
+      'มันแทนที่ความจำเป็นของ argument subscription_id',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Terraform ตัดสินใจลำดับการสร้าง resource ยังไง โดยใช้ตัวอย่าง resource group จากบทนี้',
+    options: [
+      'เรียงจากบนลงล่างตามลำดับที่เขียนในไฟล์เป๊ะ ๆ',
+      'เรียงตามตัวอักษรของชื่อ resource',
+      'มันสร้าง dependency graph (DAG) จาก implicit attribute reference (เช่น virtual machine ที่อ้างอิง azurerm_resource_group.main.name) กับ depends_on แบบ explicit แล้วเรียงลำดับพร้อม parallelize ตามนั้น',
+      'มันสร้างทุก resource พร้อมกันเป๊ะ ๆ เสมอ',
+    ],
+    answer: 2,
+  },
+  {
+    q: 'ข้อไหนอธิบาย required_providers ใน terraform block ได้ถูกต้อง',
+    options: [
+      'มันตั้งค่า Azure subscription ให้ทุก resource',
+      'มันระบุ provider แต่ละตัวที่ต้องใช้ รวมถึง registry source และ version constraint ที่รับได้',
+      'มันแสดงรายชื่อ resource type ทุกตัวที่ใช้ใน configuration',
+      'จำเป็นเฉพาะตอนใช้ data block เท่านั้น',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="foundations/hcl-providers-and-resources" questions={quizHcl} />
+
+<ProgressTracker client:visible id="foundations/hcl-providers-and-resources" />

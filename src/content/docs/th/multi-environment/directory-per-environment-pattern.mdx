@@ -1,0 +1,191 @@
+---
+title: 'The Directory-per-Environment Pattern'
+description: 'การให้แต่ละ environment มี directory, backend, และ provider block ของตัวเองให้ isolation จริงบน Azure ยังไง และปัญหา duplication ใหม่ที่มันสร้างขึ้นมา'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+แทนที่จะใช้ configuration เดียวสลับไปมาระหว่าง workspace, directory-per-environment pattern ให้ dev, staging, และ prod แต่ละอันมี directory จริงของตัวเอง มี backend และ provider block ของตัวเอง ชี้ไปที่ Azure resource group ของตัวเองหรือแม้แต่ subscription ของตัวเอง ในขณะที่ทุกอันเรียก module ที่แชร์กันตัวเดียวสำหรับ resource จริง
+
+## แยกจริง: หนึ่ง directory ต่อหนึ่ง environment
+
+รูปร่างของ pattern นี้คือชุด environment directory บาง ๆ อยู่ข้าง ๆ module ที่แชร์กันตัวเดียว
+
+```bash
+tree environments modules
+environments
+├── dev
+│   ├── backend.tf
+│   └── main.tf
+├── staging
+│   ├── backend.tf
+│   └── main.tf
+└── prod
+    ├── backend.tf
+    └── main.tf
+modules
+└── app
+    ├── main.tf
+    ├── variables.tf
+    └── outputs.tf
+```
+
+`dev` กับ `staging` คือเคสที่เบากว่า คือแยก **resource group** แต่ subscription เดียวกัน `backend.tf` ในแต่ละอันกำหนด state key ของตัวเองและ `subscription_id` ของตัวเอง
+
+```hcl
+# environments/dev/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "dev.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+}
+```
+
+```hcl
+# environments/staging/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "staging.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+}
+```
+
+`prod` คือเคสที่แข็งกว่า สงวนไว้สำหรับ environment ที่ต้องการแยกแบบแข็งจริง ๆ คือ `subscription_id` ที่ต่างกันไปเลย ทำให้ความผิดพลาดใน `dev` หรือ `staging` แม้แต่ authenticate เข้าไปที่ resource ของ prod ก็ยังทำไม่ได้ ไม่ต้องพูดถึงการแก้ไขมัน
+
+```hcl
+# environments/prod/backend.tf
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateacct001"
+    container_name       = "tfstate"
+    key                  = "prod.terraform.tfstate"
+  }
+}
+
+provider "azurerm" {
+  features {}
+  subscription_id = "22222222-2222-2222-2222-222222222222"
+}
+```
+
+`main.tf` ของแต่ละ environment เรียก module ที่แชร์กันตัวเดียวกัน ต่างกันแค่ input value ที่ส่งเข้าไป
+
+```hcl
+# environments/dev/main.tf
+module "app" {
+  source = "../../modules/app"
+
+  resource_group_name = "app-dev-rg"
+  location            = "eastus"
+  vm_size             = "Standard_B1s"
+  instance_count      = 1
+}
+```
+
+```hcl
+# environments/prod/main.tf
+module "app" {
+  source = "../../modules/app"
+
+  resource_group_name = "app-prod-rg"
+  location            = "eastus"
+  vm_size             = "Standard_D2s_v5"
+  instance_count      = 3
+}
+```
+
+## สิ่งที่ pattern นี้แก้ได้จริง
+
+นี่คือ isolation จริง ไม่ใช่แค่ naming convention แบบที่ workspace ให้มา `dev` กับ `staging` แต่ละอันตกอยู่ใน **resource group** ของตัวเอง ทำให้ `terraform destroy` ที่พลาดใน environment หนึ่งเข้าไปแตะ resource ใน resource group ของอีก environment ไม่ได้ และแต่ละอันมี RBAC scope ของตัวเอง `prod` ไปไกลกว่านั้นอีก คือนั่งอยู่ใน **subscription** ของตัวเอง ซึ่งเป็นเส้นแบ่งที่แข็งกว่าของ Azure คือ billing แยก, quota default แยก, และชุด credential ที่ต่างกันจริง ๆ ที่ต้องใช้แม้แต่จะแตะมันได้ ต่างจาก workspace ตรงที่ไม่มี `provider` block ที่แชร์กันอยู่ที่ไหนเลยที่จะปล่อยให้ `terraform apply` ที่พลาดข้ามไปถึงอีก environment ได้ Terraform run ของ directory `dev` ไม่มี credential path ไปยัง subscription ของ prod เลย
+
+## duplication ที่กลับมาใหม่
+
+ลองดู `backend.tf` สามไฟล์ข้างบนใกล้ ๆ มันเหมือนกันทุกโครงสร้าง คือ backend type เดียวกัน, storage account เดียวกัน, container เดียวกัน ต่างกันแค่สองบรรทัดพอดี คือ `key` กับ `subscription_id` เรื่องเดียวกันเกิดกับ `module "app"` block ใน `main.tf` ทุกไฟล์ คือ argument `source` ถูก copy-paste แบบตัวอักษรเป๊ะ ๆ เข้าไปในทุก environment และถ้า module นั้นย้ายที่ไปวันหนึ่ง หรือถูก pin ด้วย `version` ทุก environment directory ต้องแก้แบบเดียวกันด้วยมือ นี่คือภาพสะท้อนกลับของปัญหา workspace workspace แก้ duplication ได้ด้วยการแชร์ทุกอย่างและ isolate แทบไม่ได้อะไรเลย ส่วน directory-per-environment แก้ isolation ได้ด้วยการแยกทุกอย่าง รวมถึง boilerplate ที่ไม่เคยต้องต่างกันเลยด้วย
+
+<Mermaid title="Three separate environment directories give dev and staging their own resource group and prod its own subscription, but the backend, provider, and module source blocks are nearly identical copy-paste across all three" code={dirPerEnvDiagram} />
+
+export const dirPerEnvDiagram = `flowchart LR
+  devDir["environments/dev"] -->|same subscription, own resource group| subA["Subscription A"]
+  stagingDir["environments/staging"] -->|same subscription, own resource group| subA
+  prodDir["environments/prod"] -->|separate subscription| subB["Subscription B, prod only"]
+  devDir -->|module source = ../../modules/app| sharedModule["modules/app, shared"]
+  stagingDir -->|module source = ../../modules/app| sharedModule
+  prodDir -->|module source = ../../modules/app| sharedModule
+  devDir -.-> dup["backend.tf and provider block nearly identical in every environment"]
+  stagingDir -.-> dup
+  prodDir -.-> dup`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+directory-per-environment pattern ให้ทุก environment มี directory, backend, และ provider block ที่แยกกันจริง ๆ ให้ dev กับ staging นั่งอยู่ใน Azure **resource group** ของตัวเอง และ prod นั่งอยู่ใน **subscription** ของตัวเองที่เป็นเส้นแบ่งแข็งกว่า เพื่อ blast-radius isolation จริง ในขณะที่ทุกอันเรียก **module** ที่แชร์กันตัวเดียวสำหรับ resource จริง ต้นทุนคือ backend configuration, provider configuration, และ `source` argument ของ module จบลงด้วยการซ้ำกันแทบทุกตัวอักษรข้ามทุก environment directory เอาปัญหา copy-paste maintenance ตัวเดิมที่ module นี้เปิดเรื่องด้วยกลับมาอีกครั้ง แค่ในสเกลที่เล็กลง
+</Callout>
+
+export const quizDirPerEnv = [
+  {
+    q: 'directory-per-environment pattern แก้อะไรที่ Terraform workspace แก้ไม่ได้',
+    options: [
+      'มันทำให้ไม่ต้องมี Terraform state file เลย',
+      'isolation จริง เพราะแต่ละ environment มี backend ของตัวเอง มี provider block ของตัวเอง และชี้ไปที่ Azure resource group ของตัวเองหรือแม้แต่ subscription ของตัวเองได้',
+      'มันทำให้ทุก environment sync กันเองอัตโนมัติเสมอ',
+      'มันทำให้ไม่ต้องใช้ input variable เลย',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ส่วนไหนที่ยังแชร์และ DRY อยู่ข้าม environment ใน pattern นี้',
+    options: [
+      'ไฟล์ backend.tf ในแต่ละ environment directory',
+      'module ที่แชร์กันซึ่งทุก environment directory เรียกใช้สำหรับ resource จริง',
+      'subscription_id ที่แต่ละ environment ใช้',
+      'state key ที่แต่ละ environment ใช้',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'อะไรที่ยังคงถูกซ้ำข้าม environment directory ใน pattern นี้ ทั้งที่แก้ isolation ได้แล้ว',
+    options: [
+      'Azure region ที่ทุก environment ใช้',
+      'backend configuration block, provider configuration block, และ module source argument ที่ซ้ำกันแทบทุกตัวอักษรในทุก environment directory',
+      'resource definition จริงข้างใน modules/app',
+      'รายการ environment ที่มีอยู่',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ใน pattern นี้ dev กับ staging ถูก isolate ต่างจาก prod ยังไง',
+    options: [
+      'ไม่ต่างกันเลย ทั้งสามใช้ isolation แบบเดียวกันหมด',
+      'dev กับ staging แชร์ subscription เดียวกันแต่อยู่คนละ resource group ส่วน prod อยู่ใน subscription ที่แยกออกไปทั้งหมดเพื่อเส้นแบ่งที่แข็งกว่า',
+      'dev กับ staging ใช้ subscription แยกกัน ส่วน prod แชร์ resource group กับ dev',
+      'มีแค่ prod เท่านั้นที่ใช้ backend configuration',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/directory-per-environment-pattern" questions={quizDirPerEnv} />
+
+<ProgressTracker client:visible id="multi-environment/directory-per-environment-pattern" />

@@ -1,0 +1,139 @@
+---
+title: 'DRY Configuration with include'
+description: 'How the include block, find_in_parent_folders, read_terragrunt_config, and inputs let a unit inherit configuration instead of repeating it.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+An `include` block plus `find_in_parent_folders()` lets a unit pull in everything a shared config file already defines, and `locals` combined with `read_terragrunt_config()` extends that same trick to any number of intermediate files sitting between the root and a unit.
+
+## The include block: inheriting root.hcl without repeating it
+
+The previous lesson showed `root.hcl` declaring `remote_state` and a provider `generate` block once, at the top of the tree. A unit gets access to both of those without copying a single line, through an `include` block:
+
+```hcl
+# vnet/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+```
+
+`find_in_parent_folders("root.hcl")` walks up the directory tree, starting from the unit's own directory, until it finds a file named `root.hcl`. It does not matter how many directories deep the unit lives — one level under the root or five — the function keeps climbing until it locates the file, so moving a unit to a different depth in the tree never breaks the reference. The label on the `include` block, `"root"` here, is just a name Terragrunt uses internally to track this particular inclusion; a unit can have more than one `include` block, each with its own label, each pointing at a different file.
+
+Once included, every block `root.hcl` defines — `remote_state`, the provider `generate` block, and anything else placed there — behaves as if it had been written directly inside the unit's own `terragrunt.hcl`. That is the entire mechanism: one `include` block replaces what would otherwise be dozens of repeated lines across every unit in the tree.
+
+## Sharing granular config downward with locals and read_terragrunt_config
+
+`root.hcl` is not the only place shared configuration can live. A large tree often has a middle layer too — for example, one `subscription.hcl` file per Azure subscription, sitting above every unit that belongs to that subscription, holding values specific to it:
+
+```hcl
+# subscriptions/sub-networking/subscription.hcl
+locals {
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+  environment     = "networking"
+}
+```
+
+A unit underneath that subscription reads it with `read_terragrunt_config()`, wrapped in a `locals` block of its own:
+
+```hcl
+# subscriptions/sub-networking/vnet/terragrunt.hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+
+locals {
+  subscription_vars = read_terragrunt_config(find_in_parent_folders("subscription.hcl"))
+}
+
+inputs = {
+  subscription_id = local.subscription_vars.locals.subscription_id
+  address_space   = ["10.1.0.0/16"]
+  tags = {
+    environment = local.subscription_vars.locals.environment
+  }
+}
+```
+
+`read_terragrunt_config()` parses the file it is given and hands back a map of everything defined inside it, so `local.subscription_vars.locals.subscription_id` reaches straight into the `locals` block of `subscription.hcl`. Notice this is a different mechanism from `include` — `include` inherits blocks like `remote_state` wholesale, while `read_terragrunt_config()` gives a unit fine-grained access to specific values from a file it chooses to read, without inheriting the whole thing. That distinction is what makes it useful for an intermediate file: `root.hcl` still applies to every unit in the entire tree via `include`, while `subscription.hcl` only needs to be read by the handful of units that actually live under that one subscription.
+
+## inputs: the Terragrunt equivalent of a tfvars file
+
+Every example so far has ended with an `inputs` block, and it deserves its own explanation. In plain Terraform, you hand a root module its variable values with a `.tfvars` file or `-var` flags on the command line. Terragrunt's `inputs` block does the same job, except the values live directly inside the unit's own HCL instead of a separate file:
+
+```hcl
+inputs = {
+  address_space = ["10.0.0.0/16"]
+  location      = "westeurope"
+}
+```
+
+Every key in `inputs` must match a variable the underlying Terraform module actually declares — Terragrunt passes each one straight through as if it had been supplied with `-var`. Because `inputs` is ordinary HCL, it can reference `locals`, the result of `read_terragrunt_config()`, or later in this module, another unit's outputs — none of which a static `.tfvars` file could ever do.
+
+<Mermaid title="root.hcl, an intermediate subscription.hcl, and a unit combining both" code={includeDiagram} />
+
+export const includeDiagram = `flowchart TD
+  root["root.hcl (remote_state, provider generate)"]
+  sub["subscription.hcl (locals: subscription_id, environment)"]
+  unit["vnet/terragrunt.hcl"]
+  root -->|include find_in_parent_folders root.hcl| unit
+  sub -->|read_terragrunt_config find_in_parent_folders subscription.hcl| unit
+  unit --> inputs["inputs = merge of root, subscription, and unit values"]`;
+
+<Callout title="The one-line takeaway">
+An `include "root" { path = find_in_parent_folders("root.hcl") } ` block inherits every block defined in the shared root file wholesale, without a unit repeating any of it, and `find_in_parent_folders()` keeps climbing the directory tree until it finds that file regardless of how deep the unit sits. A `locals` block combined with `read_terragrunt_config(find_in_parent_folders(...))` extends the same idea to intermediate files like a per-subscription `subscription.hcl`, giving a unit fine-grained access to specific shared values instead of inheriting an entire file. The `inputs` block is the Terragrunt equivalent of a `.tfvars` file, feeding values straight into the underlying Terraform module's variables, and because it is ordinary HCL it can combine values pulled from the root, an intermediate file, and the unit itself in one place.
+</Callout>
+
+export const quizIncludeAndDry = [
+  {
+    q: 'What does an include block with find_in_parent_folders do?',
+    options: [
+      'It copies the named file contents into a new file on disk',
+      'It walks up the directory tree to locate the named file and inherits every block it defines, without the unit repeating any of it',
+      'It deletes the named file after reading it',
+      'It only works if the named file sits exactly one directory above the unit',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is read_terragrunt_config used for with an intermediate file such as subscription.hcl?',
+    options: [
+      'It replaces the need for an include block entirely',
+      'It gives a unit fine-grained access to specific values from a file it chooses to read, without inheriting that whole file the way include does',
+      'It generates a new Terraform provider block automatically',
+      'It only works on files named exactly root.hcl',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'The inputs block in a unit terragrunt.hcl is the Terragrunt equivalent of what',
+    options: [
+      'A Terraform backend configuration',
+      'A tfvars file or -var flags supplying values to the underlying Terraform module variables',
+      'A remote_state block',
+      'A Terraform provider block',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why might a tree use an intermediate subscription.hcl in addition to root.hcl',
+    options: [
+      'Because root.hcl can only be read by one unit at a time',
+      'Because some values only apply to the units under one specific subscription, rather than every unit in the entire tree',
+      'Because include blocks cannot be labeled more than once',
+      'Because Terragrunt requires at least two levels of parent config',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="terragrunt-fundamentals/dry-configuration-with-include" questions={quizIncludeAndDry} />
+
+<ProgressTracker client:visible id="terragrunt-fundamentals/dry-configuration-with-include" />

@@ -1,0 +1,109 @@
+---
+title: 'Remote Backends and Locking'
+description: 'Why a team cannot share a local state file, how to configure the azurerm backend, and why its state locking needs no extra resource to enable.'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+A **remote backend** stores state in a shared location like Azure Storage instead of on one person's laptop, and **locking** stops two people from writing to that shared state at the same time.
+
+## Why local state does not work for a team
+
+By default, `terraform.tfstate` lives on the machine where you ran `apply`. That is fine for a solo experiment, but it breaks down the moment a second person joins:
+
+- Teammate A runs `apply` and creates a virtual network. Their laptop's local state file now knows about it.
+- Teammate B, on a different laptop, has never seen that state file. They run `plan` against their own stale or empty local state and either try to recreate the virtual network or get a plan that makes no sense next to what actually exists.
+- CI/CD pipelines have the same problem in a sharper form — a pipeline runner is a fresh, disposable environment with no local state file at all. It needs a canonical copy of state to read from and write to on every run, not a copy that happens to be sitting on someone's laptop.
+
+The fix is to move state off any individual machine and into a shared backend that every team member and every CI run points at.
+
+## Configuring the azurerm backend
+
+The standard way to store Terraform state on Azure is an Azure Storage container configured as the backend:
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "acmetfstate001"
+    container_name        = "tfstate"
+    key                    = "networking.terraform.tfstate"
+  }
+}
+```
+
+`resource_group_name` and `storage_account_name` identify the storage account that holds state, `container_name` is the blob container inside that account, and `key` is the blob name within the container — so different configurations (or different Terragrunt units) typically use different keys in the same container. Every one of these four arguments is required for the backend to know exactly which blob holds this configuration's state.
+
+## Locking is built in, not bolted on
+
+Here is the detail that genuinely differs from some other clouds: the azurerm backend's state locking is **built into how Azure Blob Storage works**, with nothing extra to configure. When Terraform writes state through this backend, it takes out a **blob lease** on the state blob before writing — a native Azure Blob Storage feature that grants exclusive write access to whoever holds the lease. A second `apply` that tries to acquire the same lease while it is held simply cannot, so it waits or fails cleanly instead of writing over the first run.
+
+There is no separate lock table to create, no extra argument to set, and no additional Azure resource to provision just for locking. The four arguments in the block above are all the azurerm backend needs — locking comes for free as soon as state is stored in Azure Storage. This is worth calling out precisely because it is simpler than some other clouds' backends have historically been, where locking has needed a separate resource of its own to hold lock records.
+
+## What locking actually prevents
+
+Imagine locking did not exist. Two people, or a person and a CI run, both execute `terraform apply` against the same Azure-Storage-backed state at nearly the same moment. Both read the current state, both compute a plan, and both start writing their results back to the same state blob. Depending on timing, the second write can overwrite the first — silently dropping the first run's recorded changes even though the first run's infrastructure changes actually happened — or the state file can end up corrupted mid-write.
+
+A lock turns that race into a queue. The first `apply` to start acquires the blob lease; the second `apply` either waits for the lease to be released, or fails immediately with a clear "state is locked" error, depending on the flags used. Either way, the second run does not get to write over the first run's state while it is mid-flight.
+
+```bash
+# A run that finds the state already locked fails fast with a clear message,
+# rather than corrupting the state file
+terraform apply
+# Error: Error acquiring the state lock
+```
+
+<Mermaid title="Two applies race for the same Azure-Storage-backed state; the built-in blob lease lets one through and makes the other wait" code={lockingDiagram} />
+
+export const lockingDiagram = `flowchart LR
+  eng1["Engineer A: terraform apply"] -->|acquires blob lease| storage["Azure Storage: state blob"]
+  eng2["CI run: terraform apply"] -->|blocked, waits or fails| storage
+  storage -->|lease released after apply| eng2`;
+
+<Callout title="The one-line takeaway">
+A **remote backend** like Azure Storage gives every teammate and every CI run the same canonical copy of state, instead of each machine holding its own diverging local file. The **azurerm backend** needs only `resource_group_name`, `storage_account_name`, `container_name`, and `key` — **locking is built in**, using Azure Blob Storage's own blob-lease mechanism, with no separate lock table or extra argument required. Locking prevents two concurrent `apply` runs from writing to the same state blob at the same time, which would otherwise corrupt it or silently drop one run's changes.
+</Callout>
+
+export const quizBackends = [
+  {
+    q: 'Why does a local terraform.tfstate file break down once a second team member starts running Terraform',
+    options: [
+      'Local state files expire after 24 hours',
+      'Each machine only knows about the changes applied from that same machine, so a second laptop plans against stale or missing state',
+      'Terraform refuses to run with more than one contributor',
+      'Local state files cannot store more than one resource',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What extra resource or argument does the azurerm backend need to configure in order to enable state locking',
+    options: [
+      'A separate lock table resource, similar to a dedicated locking database',
+      'None — locking is built into Azure Blob Storage itself through its blob-lease mechanism, and works as soon as resource_group_name, storage_account_name, container_name, and key are set',
+      'An additional lock_enabled = true argument on the backend block',
+      'A separate Azure Function that manages lock state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What does state locking actually prevent',
+    options: [
+      'It prevents anyone from ever running terraform plan',
+      'It prevents two concurrent apply runs from writing to the same state file at the same time, which could corrupt it or silently drop changes',
+      'It prevents Terraform from reading the state file at all',
+      'It prevents resources from being destroyed accidentally',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-management/remote-backends-and-locking" questions={quizBackends} />
+
+<ProgressTracker client:visible id="state-management/remote-backends-and-locking" />

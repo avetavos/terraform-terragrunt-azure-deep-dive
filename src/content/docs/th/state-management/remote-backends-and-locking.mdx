@@ -1,0 +1,109 @@
+---
+title: 'Remote Backends and Locking'
+description: 'ทำไมทีมแชร์ local state file กันไม่ได้ วิธี config azurerm backend และทำไม state locking ของมันไม่ต้องเพิ่ม resource แยกเลย'
+sidebar:
+  order: 2
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+**remote backend** เก็บ state ไว้ในที่ที่แชร์กันได้อย่าง Azure Storage แทนที่จะอยู่บน laptop ของคนเดียว และ **locking** ก็ป้องกันไม่ให้สองคนเขียน state ที่แชร์กันนั้นพร้อมกัน
+
+## ทำไม local state ถึงใช้กับทีมไม่ได้
+
+โดย default `terraform.tfstate` อยู่บนเครื่องที่คุณรัน `apply` นั่นแหละ ซึ่งใช้ได้ดีตอนทำคนเดียว แต่พังทันทีที่มีคนที่สองเข้ามา
+
+- เพื่อนร่วมทีม A รัน `apply` แล้วสร้าง virtual network ไฟล์ state บน laptop ของเขาก็รู้เรื่องนี้แล้ว
+- เพื่อนร่วมทีม B บน laptop คนละเครื่อง ไม่เคยเห็นไฟล์ state นั้นเลย เขารัน `plan` เทียบกับ local state ของตัวเองที่เก่าหรือว่างเปล่า แล้วก็จะพยายามสร้าง virtual network ซ้ำ หรือไม่ก็ได้ plan ที่ไม่สมเหตุสมผลเทียบกับของจริงที่มีอยู่
+- CI/CD pipeline เจอปัญหาเดียวกันแต่หนักกว่า — pipeline runner คือ environment ใหม่ที่ใช้แล้วทิ้ง ไม่มี local state file อยู่เลย มันต้องการ state ชุดเดียวที่เป็น canonical ให้อ่านและเขียนทุกครั้งที่รัน ไม่ใช่สำเนาที่บังเอิญอยู่บน laptop ใครสักคน
+
+ทางแก้คือย้าย state ออกจากเครื่องใดเครื่องหนึ่ง ไปไว้บน shared backend ที่ทั้งทีมและทุก CI run ชี้ไปที่เดียวกัน
+
+## Config azurerm backend
+
+วิธีมาตรฐานในการเก็บ Terraform state บน Azure คือใช้ Azure Storage container เป็น backend
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "acmetfstate001"
+    container_name        = "tfstate"
+    key                    = "networking.terraform.tfstate"
+  }
+}
+```
+
+`resource_group_name` กับ `storage_account_name` ระบุว่า storage account ไหนเก็บ state ไว้ `container_name` คือ blob container ใน account นั้น และ `key` คือชื่อ blob ภายใน container — configuration ที่ต่างกัน (หรือ Terragrunt unit ที่ต่างกัน) มักใช้ key คนละตัวใน container เดียวกัน ทั้งสี่ argument นี้จำเป็นทั้งหมด เพื่อให้ backend รู้ว่า blob ตัวไหนเก็บ state ของ configuration นี้อยู่
+
+## Locking ติดมาในตัว ไม่ต้องต่อเพิ่ม
+
+นี่คือจุดที่ต่างจาก cloud อื่นจริง ๆ state locking ของ azurerm backend **ติดมากับวิธีทำงานของ Azure Blob Storage เอง** ไม่ต้อง config อะไรเพิ่มเลย ตอน Terraform เขียน state ผ่าน backend นี้ มันจะขอ **blob lease** บน state blob ก่อนเขียน — เป็นฟีเจอร์ native ของ Azure Blob Storage ที่ให้สิทธิ์เขียนแบบ exclusive กับคนที่ถือ lease อยู่ พอ `apply` ตัวที่สองพยายามขอ lease ตัวเดียวกันในขณะที่มันถูกถืออยู่ ก็ขอไม่ได้ เลยต้องรอหรือ fail แบบ clean แทนที่จะไปเขียนทับ run แรก
+
+ไม่มี lock table แยกที่ต้องสร้าง ไม่มี argument เพิ่มที่ต้องตั้ง และไม่มี Azure resource เพิ่มที่ต้อง provision แค่เพื่อ locking เลย argument สี่ตัวใน block ข้างบนคือทั้งหมดที่ azurerm backend ต้องการ locking มาฟรีทันทีที่ state ถูกเก็บใน Azure Storage เรื่องนี้ควรพูดให้ชัดเพราะมันเรียบง่ายกว่า backend ของ cloud อื่นบางเจ้าที่ผ่านมา ซึ่ง locking เคยต้องมี resource แยกไว้เก็บ lock record ต่างหาก
+
+## Locking ป้องกันอะไรจริง ๆ
+
+ลองนึกภาพว่าไม่มี locking คนสองคน หรือคนหนึ่งกับ CI run หนึ่ง รัน `terraform apply` เข้าไปที่ state เดียวกันบน Azure Storage ในเวลาใกล้เคียงกัน ทั้งคู่อ่าน state ปัจจุบัน ทั้งคู่คำนวณ plan และทั้งคู่เริ่มเขียนผลลัพธ์กลับไปที่ state blob เดียวกัน แล้วแต่จังหวะเวลา การเขียนครั้งที่สองอาจเขียนทับครั้งแรก — ทำให้การเปลี่ยนแปลงที่ run แรกบันทึกไว้หายไปเงียบ ๆ ทั้งที่ infrastructure ของ run แรกถูกเปลี่ยนไปจริง ๆ แล้ว หรือไม่ก็ state file อาจเสียหายกลางคัน
+
+lock เปลี่ยน race แบบนั้นให้กลายเป็นคิว `apply` ตัวแรกที่เริ่มจะได้ blob lease ไป ส่วน `apply` ตัวที่สองก็ต้องรอให้ lease ถูกปล่อย หรือไม่ก็ fail ทันทีด้วย error ที่ชัดเจน แล้วแต่ flag ที่ใช้ ไม่ว่าทางไหน run ที่สองก็ไม่มีทางเขียนทับ state ของ run แรกในระหว่างที่มันยังทำงานอยู่
+
+```bash
+# A run that finds the state already locked fails fast with a clear message,
+# rather than corrupting the state file
+terraform apply
+# Error: Error acquiring the state lock
+```
+
+<Mermaid title="Two applies race for the same Azure-Storage-backed state; the built-in blob lease lets one through and makes the other wait" code={lockingDiagram} />
+
+export const lockingDiagram = `flowchart LR
+  eng1["Engineer A: terraform apply"] -->|acquires blob lease| storage["Azure Storage: state blob"]
+  eng2["CI run: terraform apply"] -->|blocked, waits or fails| storage
+  storage -->|lease released after apply| eng2`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+**remote backend** อย่าง Azure Storage ทำให้เพื่อนร่วมทีมทุกคนและทุก CI run เห็น state ชุดเดียวกัน แทนที่แต่ละเครื่องจะมีไฟล์ local ของตัวเองที่ diverge ไปเรื่อย ๆ **azurerm backend** ต้องการแค่ `resource_group_name`, `storage_account_name`, `container_name` และ `key` — **locking ติดมาในตัว** ใช้กลไก blob-lease ของ Azure Blob Storage เอง ไม่ต้องมี lock table แยกหรือ argument เพิ่มเลย locking ป้องกันไม่ให้ `apply` สอง run เขียนลง state blob เดียวกันพร้อมกัน ซึ่งถ้าไม่มีมันจะทำให้ state เสียหายหรือ silently ทำการเปลี่ยนแปลงของ run หนึ่งหายไป
+</Callout>
+
+export const quizBackends = [
+  {
+    q: 'ทำไม local terraform.tfstate ถึงพังทันทีที่เพื่อนร่วมทีมคนที่สองเริ่มรัน Terraform',
+    options: [
+      'local state file หมดอายุหลัง 24 ชั่วโมง',
+      'แต่ละเครื่องรู้แค่การเปลี่ยนแปลงที่ apply จากเครื่องนั้นเอง laptop ตัวที่สองเลย plan เทียบกับ state ที่เก่าหรือไม่มีอยู่จริง',
+      'Terraform ปฏิเสธการรันถ้ามีผู้ร่วมงานมากกว่าหนึ่งคน',
+      'local state file เก็บ resource ได้แค่ตัวเดียว',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ต้อง config resource หรือ argument เพิ่มอะไรใน azurerm backend เพื่อเปิดใช้ state locking',
+    options: [
+      'ต้องมี lock table resource แยก คล้ายฐานข้อมูล locking เฉพาะ',
+      'ไม่ต้องเลย — locking ติดมากับ Azure Blob Storage เองผ่านกลไก blob-lease และทำงานทันทีที่ตั้ง resource_group_name, storage_account_name, container_name และ key',
+      'ต้องเพิ่ม argument lock_enabled = true ใน backend block',
+      'ต้องมี Azure Function แยกไว้จัดการ lock state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'state locking ป้องกันอะไรจริง ๆ',
+    options: [
+      'ป้องกันไม่ให้ใครรัน terraform plan ได้เลย',
+      'ป้องกันไม่ให้ apply สอง run เขียนลง state file เดียวกันพร้อมกัน ซึ่งอาจทำให้เสียหายหรือ silently ทำการเปลี่ยนแปลงหายไป',
+      'ป้องกันไม่ให้ Terraform อ่าน state file ได้เลย',
+      'ป้องกันไม่ให้ resource ถูกลบโดยไม่ตั้งใจ',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="state-management/remote-backends-and-locking" questions={quizBackends} />
+
+<ProgressTracker client:visible id="state-management/remote-backends-and-locking" />

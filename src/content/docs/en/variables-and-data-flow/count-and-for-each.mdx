@@ -1,0 +1,213 @@
+---
+title: 'Count and For Each'
+description: 'Creating multiple resource instances with the count and for_each meta-arguments, the index-shifting foot-gun that makes count risky for ordered lists, and how for expressions are a distinct collection comprehension rather than the same thing as for_each.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`count` and `for_each` are meta-arguments that create more than one instance of the same resource block, `count` addressing each copy by a numeric index and `for_each` by a stable key, while a `for` expression is an unrelated comprehension syntax that transforms one collection into another.
+
+## count: near-identical copies, addressed by index
+
+`count` takes a whole number and creates that many instances of a resource, numbered `0` through `count - 1`. Inside the resource block, `count.index` holds the current instance's number, which is typically used to pick an element out of a parallel list. Outside the resource, each instance is addressed with `[index]` — `azurerm_linux_virtual_machine.web[0]`, `azurerm_linux_virtual_machine.web[1]`, and so on.
+
+```hcl
+variable "vm_names" {
+  type        = list(string)
+  description = "Names for the web tier virtual machines, in order"
+  default     = ["web-a", "web-b", "web-c"]
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  count = length(var.vm_names)
+
+  name                = "${var.environment}-${var.vm_names[count.index]}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_D2s_v3"
+  admin_username      = "azureuser"
+
+  network_interface_ids = [
+    azurerm_network_interface.web[count.index].id,
+  ]
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+```
+
+With `var.vm_names` at its default, this creates three virtual machines: `azurerm_linux_virtual_machine.web[0]` named `web-a`, `web[1]` named `web-b`, and `web[2]` named `web-c`. `count.index` is what makes each copy slightly different — a different name here, and typically a different network interface, disk, or IP address elsewhere in a real configuration.
+
+## count's foot-gun: removing a middle item shifts every index after it
+
+`count` addresses instances purely by position in a list, and that is exactly where it becomes dangerous. Remove an item from the middle of `var.vm_names` and every element after it slides down one position — Terraform has no way to know that "index 1" now refers to a different name than it did before; it only sees that the value at index 1 changed and the value at index 2 disappeared.
+
+```bash
+# Before: vm_names = ["web-a", "web-b", "web-c"]
+#   azurerm_linux_virtual_machine.web[0] -> web-a
+#   azurerm_linux_virtual_machine.web[1] -> web-b
+#   azurerm_linux_virtual_machine.web[2] -> web-c
+
+# Remove "web-b" from the middle: vm_names = ["web-a", "web-c"]
+#   azurerm_linux_virtual_machine.web[0] -> web-a   (unchanged, untouched)
+#   azurerm_linux_virtual_machine.web[1] -> web-c   (was web-b; name changed -> destroy and recreate)
+#   azurerm_linux_virtual_machine.web[2]            (index no longer exists -> destroy)
+```
+
+Conceptually, only one virtual machine should ever be removed here. What Terraform actually plans is a destroy-and-recreate of `web[1]` (because the name attribute at that index changed, and `name` forces replacement) and an outright destroy of `web[2]` (because the list is now shorter and that index no longer exists) — two disruptive operations to remove one item, and the surviving `web-c` machine gets rebuilt from scratch even though nothing about it was supposed to change. This is the single most common `count` foot-gun, and it gets worse the further into a list the removed item sits, because everything after it shifts.
+
+## for_each: one instance per key, unaffected by neighbors
+
+`for_each` takes a map or a set of strings and creates one resource instance per key, addressed by that key rather than a numeric position — `azurerm_linux_virtual_machine.web["primary"]` instead of `web[0]`. `each.key` and `each.value` are available inside the resource block, and for a `set(string)`, the key and the value are the same string.
+
+```hcl
+variable "web_server_roles" {
+  type        = set(string)
+  description = "Stable role names for the web tier virtual machines"
+  default     = ["primary", "secondary", "dr"]
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  for_each = var.web_server_roles
+
+  name                = "${var.environment}-web-${each.key}"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = "Standard_D2s_v3"
+  admin_username      = "azureuser"
+
+  network_interface_ids = [
+    azurerm_network_interface.web[each.key].id,
+  ]
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+}
+```
+
+Now remove `"secondary"` from `var.web_server_roles`. Terraform destroys exactly `azurerm_linux_virtual_machine.web["secondary"]` and nothing else — `web["primary"]` and `web["dr"]` are addressed by their own keys, which never moved, so Terraform has no reason to touch them at all. There is no shifting, because there is nothing positional to shift. This is why `for_each` is the safer default for any collection of resources that might grow or shrink from the middle, and `count` is best reserved for cases where you genuinely just need N identical copies of something with no meaningful identity beyond a number.
+
+## for expressions: transforming a collection, not creating resources
+
+A `for` expression is a separate piece of syntax that happens to share a name with `for_each`, and mixing the two up is an easy mistake. `for_each` (and `count`) are resource meta-arguments that decide how many instances of a resource to create. A `for` expression is a general-purpose comprehension — it takes an existing list or map and produces a new list or map, and it can appear anywhere an expression is valid: in a `local`, an `output`, a variable default, or an argument to a function.
+
+```hcl
+locals {
+  # [for x in list : expr] transforms a list into a new list
+  vm_names_upper = [for name in var.vm_names : upper(name)]
+
+  # {for k, v in map : k => expr} transforms a map into a new map
+  role_to_vm_id = {
+    for role, vm in azurerm_linux_virtual_machine.web : role => vm.id
+  }
+
+  # a for expression can filter with an if clause too
+  prod_only_roles = [for role in var.web_server_roles : role if role != "dr"]
+}
+```
+
+`local.vm_names_upper` has nothing to do with how many virtual machines get created — it just uppercases every string in `var.vm_names` and hands back a new list, useful anywhere you need the transformed values rather than the originals. `local.role_to_vm_id` does the same job for a map, pairing each `for_each` key from `azurerm_linux_virtual_machine.web` with that instance's `id`, which is a common way to hand a clean `role -> id` mapping to an `output` or another resource. None of this creates or destroys a resource instance; it only reshapes data that already exists. The resource-level `for_each` you saw above and a `for` expression like these happen to share four letters, but they solve entirely different problems.
+
+<Mermaid title="count shifts indices when a middle item is removed; for_each leaves every other key untouched" code={countForEachDiagram} />
+
+export const countForEachDiagram = `flowchart TB
+  subgraph countMeta["count: indexed by position"]
+    cl["list: web-a, web-b, web-c"] --> c0["index 0 = web-a"]
+    cl --> c1["index 1 = web-b"]
+    cl --> c2["index 2 = web-c"]
+    cr["remove web-b from the middle"] --> cs1["index 1 now web-c: destroy and recreate"]
+    cr --> cs2["index 2 no longer exists: destroy"]
+  end
+  subgraph forEachMeta["for_each: indexed by stable key"]
+    fs["set: primary, secondary, dr"] --> f0["key primary"]
+    fs --> f1["key secondary"]
+    fs --> f2["key dr"]
+    fr["remove secondary"] --> fs1["key secondary destroyed only"]
+    fr --> fs2["key primary and key dr untouched"]
+  end`;
+
+<Callout title="The one-line takeaway">
+**`count`** creates N copies of a resource addressed by a numeric index (`resource[0]`, `resource[1]`), and its central weakness is that removing an item from the middle of the underlying list shifts every later index down by one, turning "remove one thing" into a cascade of destroys and recreates for everything after it. **`for_each`** creates one instance per key in a map or set of strings, addressed by that stable key (`resource["primary"]`) instead of a position, so removing one key destroys only that instance and leaves every other key's instance completely undisturbed. A **`for` expression** (`[for x in list : expr]` or `{for k, v in map : k => expr}`) is an unrelated, general-purpose comprehension for transforming one collection into another — it shares a name with `for_each` but not a purpose, and it never decides how many resource instances exist.
+</Callout>
+
+export const quizCountForEachAzure = [
+  {
+    q: 'What happens when you remove an item from the middle of a list used with count',
+    options: [
+      'Nothing else changes, only the removed item is destroyed',
+      'Every item after the removed one shifts to a lower index, so Terraform plans destroys and recreates for those shifted indices in addition to destroying the truly removed one',
+      'Terraform automatically switches the resource to use for_each instead',
+      'Terraform refuses to plan until the list is restored to its original length',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does for_each avoid the index-shifting problem that count has',
+    options: [
+      'for_each does not support removing items at all',
+      'for_each addresses each instance by a stable key from a map or set, so removing one key only affects that key, with no positions to shift',
+      'for_each only works with exactly one item at a time',
+      'for_each recreates every instance on any change, so there is no shifting behavior to worry about',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'What is the difference between a for expression and the for_each resource meta-argument',
+    options: [
+      'They are the same feature, just written with different syntax',
+      'A for expression transforms a list or map into a new list or map and can appear anywhere an expression is valid, while for_each is a resource meta-argument that decides how many instances of a resource to create',
+      'A for expression can only be used inside a for_each argument',
+      'for_each is being deprecated in favor of for expressions',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'How is a specific instance created with for_each addressed outside its resource block',
+    options: [
+      'By a numeric index like resource[0]',
+      'By its stable key, like resource["primary"]',
+      'By the order it appears in the configuration file',
+      'It cannot be addressed individually, only as a whole',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="variables-and-data-flow/count-and-for-each" questions={quizCountForEachAzure} />
+
+<ProgressTracker client:visible id="variables-and-data-flow/count-and-for-each" />

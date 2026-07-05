@@ -1,0 +1,162 @@
+---
+title: 'Testing Modules'
+description: 'The three different levels of confidence Terraform gives you before something breaks in production, and how to write real assertions with terraform test.'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## The idea in one sentence
+
+`terraform validate`, `terraform plan`, and `terraform test` each answer a different question — "is this syntactically legal," "does Azure accept this," and "does this behave the way I expect" — and treating any one of them as a substitute for the others is how broken modules reach production looking green the whole way there.
+
+## Three levels of confidence, and why they are not interchangeable
+
+It is tempting to treat "no errors" as "it works." Terraform actually gives you three distinct checks, each catching a different class of mistake, and each one passing tells you almost nothing about the ones after it.
+
+**`terraform validate`** checks HCL syntax and internal configuration consistency only. It confirms your blocks are well-formed, argument types match what a resource expects, and references like `var.name` or `module.storage.primary_blob_endpoint` point at something that actually exists. Crucially, `validate` never talks to Azure at all — it has no way of knowing that the VM size you typed does not exist in the region you picked, or that the storage account name you chose is already taken by someone else's subscription. A configuration can pass `validate` cleanly and still fail the moment it touches the real Azure API.
+
+```bash
+terraform validate
+# Success! The configuration is valid.
+#
+# ...but validate has no idea whether "Standard_ZZZ99" is a real VM size,
+# or whether "acmeapplogs" is already taken as a storage account name.
+```
+
+**`terraform plan`** is a real step up: it authenticates to Azure, resolves data sources, and asks the provider what would happen. This is where region and SKU mistakes, naming collisions, and quota problems actually surface, because `plan` genuinely talks to the Azure API and shows you the diff it would apply. What `plan` does **not** do is assert anything about that diff being *correct*. It shows you a plan; it does not check the plan against your expectations. Nothing stops a `plan` from succeeding while quietly creating a storage account with the wrong replication type, because nobody told Terraform what "correct" means for this module.
+
+```bash
+terraform plan
+# Plan: 1 to add, 0 to change, 0 to destroy.
+#
+# This confirms Azure accepts the request. It does not confirm the
+# storage account it is about to create actually has the settings
+# this module was supposed to guarantee.
+```
+
+**`terraform test`** is the one that actively asserts something. It is Terraform's native testing framework, and it is the only one of the three that encodes "here is the specific behavior I expect" and fails loudly the moment reality diverges from it. Where `validate` checks form and `plan` checks that Azure accepts the request, `test` checks the result.
+
+## Terraform's native test framework: .tftest.hcl and terraform test
+
+Test files live in a `.tftest.hcl` extension, conventionally under a `tests/` directory, and run with the `terraform test` command. A test file is built from two kinds of block: a top-level `variables` block that supplies test-specific input values, and one or more `run` blocks, each of which executes the configuration and checks it with one or more `assert` blocks.
+
+```hcl
+# tests/storage_account_name.tftest.hcl
+variables {
+  resource_group_name = "rg-app-logs"
+}
+
+run "creates_storage_account_with_expected_name" {
+  command = plan
+
+  variables {
+    name = "acmeapplogs"
+  }
+
+  assert {
+    condition     = azurerm_storage_account.this.name == "acmeapplogs"
+    error_message = "Storage account name did not match the name variable passed in"
+  }
+}
+```
+
+Each `assert` block needs exactly two things: a `condition` that must evaluate to `true`, and an `error_message` string that is shown to you the moment that condition is `false`. The `variables` block inside a `run` block overrides or supplies values scoped to that one run, while the top-level `variables` block sets defaults shared across every `run` block in the file — this is exactly the `storage-account` module from earlier in this unit, being handed `name = "acmeapplogs"` and asserted to actually produce a resource with that name.
+
+## The command argument: plan versus apply
+
+Every `run` block has a `command` argument, and the choice between its two values, `plan` and `apply`, is the most consequential decision in a test file.
+
+`command = plan` is fast and creates no real resources. Terraform builds a plan, and your `assert` blocks check the planned values — this is exactly what the example above does, since `name` comes straight from a variable and is known before anything is ever applied. Reach for `command = plan` for the majority of test cases: anything you can verify from configuration alone, like "does this input produce this expected attribute," belongs here.
+
+`command = apply` actually creates real resources in Azure, asserts against their real resulting attributes, and then tears everything down again once the test file finishes. This is genuine integration testing — it is the only way to assert on a value Azure computes for you, such as a generated endpoint or resource ID, because that value simply does not exist until something has actually been applied.
+
+```hcl
+# tests/storage_account_endpoint.tftest.hcl
+variables {
+  name                = "acmeapplogs"
+  resource_group_name = "rg-app-logs"
+}
+
+run "creates_storage_account_with_working_endpoint" {
+  command = apply
+
+  assert {
+    condition     = output.primary_blob_endpoint != ""
+    error_message = "Expected a non-empty primary_blob_endpoint after apply"
+  }
+}
+```
+
+`command = apply` is slower and briefly costs real cloud resources, since Terraform genuinely provisions and then destroys them as part of the test run. Use it deliberately, for the assertions that actually need a live Azure-computed value — not as the default for every `run` block in the file.
+
+<Mermaid title="Three levels of confidence, each catching a different class of mistake" code={testingLaddersDiagram} />
+
+export const testingLaddersDiagram = `flowchart TB
+  subgraph rung1["terraform validate"]
+    v1["HCL syntax and internal consistency"] --> v2["never talks to Azure"]
+  end
+  subgraph rung2["terraform plan"]
+    p1["talks to the real Azure API"] --> p2["shows the diff, asserts nothing about it"]
+  end
+  subgraph rung3["terraform test"]
+    t1["run blocks with assert"] --> t2["condition and error_message enforce expected behavior"]
+  end
+  rung1 -->|catches malformed config| rung2
+  rung2 -->|catches provider-side errors| rung3
+  rung3 -->|catches wrong results| done["confidence the module actually works"]`;
+
+<Callout title="The one-line takeaway">
+`terraform validate`, `terraform plan`, and `terraform test` are three genuinely different checks, not interchangeable stand-ins for each other: `validate` only checks HCL syntax and internal consistency and never talks to Azure at all, `plan` talks to the real Azure API and surfaces provider-side errors but asserts nothing about whether the result is correct, and `terraform test` is the only one that actively asserts specific expected behavior through `.tftest.hcl` files, `run` blocks, and `assert` blocks with a `condition` and `error_message`. Within a `run` block, `command = plan` is fast, creates no real resources, and covers most test cases, while `command = apply` creates and destroys real resources so you can assert against values Azure only computes after a real apply — genuine integration testing at the cost of speed and briefly-real cloud resources.
+</Callout>
+
+export const quizTestingModules = [
+  {
+    q: 'What can terraform validate catch, and what can it never catch',
+    options: [
+      'It catches everything, including whether a chosen VM size exists in a given Azure region',
+      'It only checks HCL syntax and internal configuration consistency, and never talks to Azure, so it cannot catch things like an invalid VM size or a taken storage account name',
+      'It talks to the real Azure API just like plan does, so it catches the same errors plan does',
+      'It only checks that resource names are unique across the whole subscription',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why does passing terraform plan cleanly not guarantee a module actually works as intended',
+    options: [
+      'Because plan does not talk to Azure at all, so it proves nothing',
+      'Because plan talks to Azure and shows a diff, but it does not assert that the resulting resource actually matches any specific expected behavior',
+      'Because plan always fails the first time it runs against a new resource group',
+      'Because plan only works for resources that already exist in state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'In a .tftest.hcl run block, what is the practical difference between command = plan and command = apply',
+    options: [
+      'There is no real difference, both create real resources in Azure',
+      'command = plan is fast and creates no real resources, checking planned values, while command = apply creates real resources, asserts on their real resulting attributes, and then tears them down',
+      'command = plan only works on the first run block in a file',
+      'command = apply is required for every run block or the test file fails to parse',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Why would a test need command = apply instead of command = plan to assert on a value like primary_blob_endpoint',
+    options: [
+      'Because output values are never available under command = plan for any reason',
+      'Because primary_blob_endpoint is computed by Azure and does not exist until a real apply has actually happened',
+      'Because command = apply is simply faster than command = plan for this kind of assertion',
+      'Because assert blocks are not supported inside a command = plan run block',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="modules/testing-modules" questions={quizTestingModules} />
+
+<ProgressTracker client:visible id="modules/testing-modules" />

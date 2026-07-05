@@ -1,0 +1,129 @@
+---
+title: 'Why Terragrunt'
+description: 'ทำไม Terraform workspace กับ directory-per-environment แต่ละอันแก้ได้แค่ครึ่งเดียวของปัญหา multi-environment และช่องว่างไหนที่ Terragrunt มีไว้ปิด'
+sidebar:
+  order: 4
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+Terraform workspace แก้ reuse ได้ดีแต่ปล่อยให้ isolation อ่อนแอ directory-per-environment แก้ isolation ได้ดีแต่เอา boilerplate ที่ซ้ำกันกลับมาใหม่ และ Terragrunt มีไว้เพื่อปิดช่องว่างระหว่างสองอันนี้โดยเฉพาะ โดยไม่ต้องให้ยอมสละอย่างใดอย่างหนึ่งไป
+
+## สองครึ่งของปัญหาเดียวกัน ทบทวน
+
+สองบทที่แล้วพาไปดูคำตอบแบบ native สองแบบของ Terraform ต่อปัญหา multi-environment และแต่ละแบบแลก goal หนึ่งกับอีก goal หนึ่ง **workspace** เก็บ `.tf` config เดียวและ `backend`/`provider` block เดียว แค่สลับว่า state file ไหน active อยู่
+
+```bash
+# Workspaces: one directory, one backend, one provider, one subscription_id
+# for every environment, only the active workspace changes
+terraform workspace select prod
+terraform apply
+```
+
+**Directory-per-environment** ไปอีกทาง คือ isolation จริงผ่าน directory, backend, และ provider block ที่แยกกันจริง ๆ ต่อ environment แลกมาด้วย backend/provider boilerplate นั้นถูก copy-paste แบบตัวอักษรเป๊ะ ๆ เข้าไปในทุก environment
+
+```bash
+# Directory-per-environment: real isolation, separate backend and provider
+# per environment, but environments/dev, environments/staging, and
+# environments/prod each carry their own near-identical backend.tf
+cd environments/prod
+terraform init
+terraform apply
+```
+
+ไม่มีวิธีไหนผิด และไม่มีวิธีไหนเป็น bug ใน Terraform ทั้งสองคือ trade-off ที่ตรงไปตรงมาสองแบบระหว่าง goal เดียวกันสองอัน สิ่งที่ Terraform เองไม่มีให้คือ primitive เดียวที่ให้ isolation ที่แข็งแรงและ configuration duplication เป็นศูนย์ข้าม environment ได้พร้อมกัน
+
+## Terragrunt คืออะไรจริง ๆ
+
+**Terragrunt** คือ wrapper บาง ๆ และ orchestrator ที่นั่งอยู่บนตัว binary จริงของ `terraform` (หรือ `tofu`) มันไม่ได้เพิ่ม resource syntax ใหม่ และโค้ด module ที่เขียนเพื่อสร้าง Azure resource จริง ๆ ยังคงเป็นสิ่งเดิมที่มันเป็นอยู่แล้ว คือ Terraform ธรรมดา ในไฟล์ `.tf` ธรรมดา ไม่เปลี่ยนแปลง
+
+สิ่งที่ Terragrunt เพิ่มเข้ามาคือ layer ที่อยู่เหนือโค้ดนั้น เล็งตรงไปที่ duplication ที่ directory-per-environment เอากลับมา แทนที่จะเขียน `backend.tf` กับ `provider.tf` ที่เหมือนกันแทบทุกตัวอักษรในทุก environment directory ด้วยมือ Terragrunt ให้ define backend และ provider configuration ครั้งเดียว จากศูนย์กลาง แล้ว generate รายละเอียดต่อ environment เช่น state `key`, `subscription_id`, resource group จาก definition อันนั้นอันเดียว
+
+```hcl
+# terragrunt.hcl (a conceptual preview only; the actual syntax is the
+# subject of the next module, Terragrunt Fundamentals)
+# One central place that generates the backend and provider blocks for
+# every environment, instead of copy-pasting them into environments/dev,
+# environments/staging, and environments/prod by hand
+remote_state {
+  backend = "azurerm"
+}
+```
+
+ไอเดียเดียวกันขยายไปถึงการส่ง input variable ของแต่ละ environment และเมื่อ infrastructure ถูกแยกเป็นหลาย unit ที่ apply แยกกันเป็นอิสระต่อกัน ไปถึงการเข้าใจว่า unit ไหนต้องพึ่ง unit ไหนก่อน เพื่อให้ Terragrunt apply ตามลำดับที่ถูกต้อง
+
+## Terragrunt ไม่ใช่อะไร
+
+Terragrunt ไม่ใช่ fork ของ Terraform มันไม่ได้ compile ไปเป็น infrastructure-as-code language อื่น และมันไม่ใช่ตัวแทนของ `terraform` binary ทุกคำสั่ง Terragrunt สุดท้ายแล้ว shell out ไปเรียกคำสั่ง `terraform` หรือ `tofu` จริง ๆ เบื้องหลัง รันกับ provider เดียวกันและ state format เดียวกันที่ Terraform เข้าใจอยู่แล้ว
+
+```bash
+# Every terragrunt command wraps a real terraform (or tofu) command
+terragrunt plan   # generates config, then runs a real `terraform init` and `terraform plan`
+terragrunt apply  # generates config, then runs a real `terraform apply`
+```
+
+ความต่างนั้นสำคัญด้วยเหตุผลอีกอย่างนอกจากลด boilerplate Terraform configuration เดียวมี dependency graph ภายในของตัวเองระหว่าง resource อยู่แล้ว แต่ graph นั้นหยุดอยู่ที่ขอบของ `terraform apply` หนึ่งครั้ง เมื่อ infrastructure ของ environment หนึ่งถูกตั้งใจแยกเป็นหลาย unit ที่ apply แยกกันเป็นอิสระต่อกัน เช่น network unit, database unit, application unit แต่ละอันมี state ของตัวเอง ไม่มีอะไรใน Terraform เองรู้ว่า application unit ต้องการ output ของ database unit ก่อน นั่นคือปัญหาอีกแบบที่ Terragrunt ถูกสร้างมาแก้ คือการเรียงลำดับและส่ง output ข้าม unit ที่ apply แยกกัน ซึ่งบทต่อไปจะลงรายละเอียด
+
+<Mermaid title="Workspaces and directory-per-environment each close half the gap; Terragrunt wraps the real terraform binary to close the rest" code={terragruntGapDiagram} />
+
+export const terragruntGapDiagram = `flowchart LR
+  workspaces["Terraform workspaces: DRY, weak isolation"] --> gap["The gap: no native primitive gives both at once"]
+  dirPerEnv["Directory-per-environment: isolated, duplicated"] --> gap
+  gap --> terragrunt["Terragrunt: generates config, removes duplication"]
+  terragrunt --> realTf["Real terraform / tofu binary actually runs"]`;
+
+<Callout title="สรุปหนึ่งบรรทัด">
+Terraform workspace แก้ **DRY reuse** ได้ แลกมาด้วย isolation ที่อ่อนแอ ส่วน directory-per-environment pattern แก้ **isolation** ได้ แลกมาด้วย backend, provider, และ module-source boilerplate ที่ซ้ำกัน และ Terraform เองไม่มี primitive แบบ native ที่ให้ทั้งสองอย่างพร้อมกัน **Terragrunt** ปิดช่องว่างนั้นไม่ใช่ด้วยการแทนที่ Terraform แต่ด้วยการ wrap มัน มันคือ orchestrator บาง ๆ ที่ generate backend และ provider configuration จาก definition ศูนย์กลางอันเดียว ส่ง input ต่อ environment และเข้าใจการเรียงลำดับข้าม unit ที่ apply แยกกัน ในขณะที่ทุกคำสั่งที่มันรัน ยังคง shell out ไปหา `terraform` หรือ `tofu` binary จริงเบื้องหลังเสมอ
+</Callout>
+
+export const quizWhyTerragrunt = [
+  {
+    q: 'ช่องว่างไหนที่ทั้ง Terraform workspace และ directory-per-environment pattern ปิดไม่ได้เต็มที่ด้วยตัวเอง',
+    options: [
+      'ทั้งสองวิธีเก็บ state แบบ remote ไม่ได้',
+      'ทั้งสองวิธีไม่ได้ให้ isolation ที่แข็งแรงและ configuration duplication เป็นศูนย์ข้าม environment ได้พร้อมกัน',
+      'ทั้งสองวิธีไม่รองรับ azurerm provider',
+      'ทั้งสองวิธีไม่อนุญาตให้มี environment มากกว่าหนึ่งอัน',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Terragrunt คืออะไรจริง ๆ เทียบกับที่คนมักเข้าใจผิดว่ามันคืออะไร',
+    options: [
+      'fork ของ Terraform ที่มี resource syntax และ state format ของตัวเอง',
+      'wrapper บาง ๆ และ orchestrator รอบตัว terraform หรือ tofu binary จริง ไม่ใช่ตัวแทนของมันหรือ infrastructure-as-code language ใหม่',
+      'hosted service ที่แทนที่การรัน terraform apply ไปเลยทั้งหมด',
+      'linter ที่เช็คแค่ style ของโค้ด Terraform โดยไม่รันอะไรเลย',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'Terragrunt แก้ปัญหาแบบไหนเพิ่มเติมที่ dependency graph ภายในของ Terraform configuration เดียวแก้ไม่ได้',
+    options: [
+      'จัด format โค้ด HCL ให้สม่ำเสมอข้ามไฟล์',
+      'เรียงลำดับและส่ง output ให้ถูกต้องข้ามหลาย unit ของ infrastructure ที่ apply แยกกันเป็นอิสระต่อกัน ซึ่งเป็นขอบเขตที่ dependency graph ของ terraform apply หนึ่งครั้งมองข้ามไปไม่ถึง',
+      'เลือกว่า resource จะ deploy ไปที่ Azure region ไหน',
+      'ตรวจสอบ provider version constraint',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ทุกคำสั่ง Terragrunt สุดท้ายแล้วทำอะไรเบื้องหลัง',
+    options: [
+      'ส่ง configuration ไปให้ execution engine เฉพาะของ Terragrunt เอง',
+      'shell out ไปเรียกคำสั่ง terraform หรือ tofu จริง รันกับ provider เดียวกันและ state format เดียวกันที่ Terraform เข้าใจอยู่แล้ว',
+      'ข้าม Terraform ไปเลยและเรียก Azure Resource Manager API ตรง ๆ',
+      'แปลง configuration ไปเป็น declarative language อื่นก่อน apply',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="multi-environment/why-terragrunt" questions={quizWhyTerragrunt} />
+
+<ProgressTracker client:visible id="multi-environment/why-terragrunt" />

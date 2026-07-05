@@ -1,0 +1,230 @@
+---
+title: 'Expressions, Functions, and Conditionals'
+description: 'ใช้ built-in function กลุ่ม string, collection, numeric และ networking ทดสอบ expression สด ๆ ด้วย terraform console เลือกค่าด้วย conditional expression และสร้าง nested block ซ้ำหลายอันด้วย dynamic'
+sidebar:
+  order: 3
+---
+
+import Mermaid from '../../../../components/Mermaid.astro';
+import Callout from '../../../../components/Callout.astro';
+import Quiz from '../../../../components/Quiz.tsx';
+import ProgressTracker from '../../../../components/ProgressTracker.tsx';
+
+## ไอเดียในหนึ่งประโยค
+
+expression language ของ Terraform มาพร้อม built-in function สำหรับแปลงค่า มี `terraform console` เป็น REPL ไว้เช็คว่า expression หนึ่งจะ evaluate ออกมาเป็นอะไรก่อนที่จะเอาไปใกล้ infrastructure จริง มี conditional expression ไว้เลือกระหว่างสองค่า และมี `dynamic` block ไว้สร้าง nested block จำนวนไม่แน่นอนภายใน resource เดียว
+
+## Built-in functions: แปลงและรวมค่าเข้าด้วยกัน
+
+function library ของ Terraform จัดกลุ่มคร่าว ๆ ตามชนิดของค่าที่มันทำงานด้วย function กลุ่ม string อย่าง `join` กับ `split` ย้ายไปมาระหว่าง list กับ string ที่คั่นด้วย delimiter และ `format` สร้าง string จาก template บวก argument function กลุ่ม collection อย่าง `lookup`, `merge`, `contains` อ่านและรวม map กับ list เข้าด้วยกัน function กลุ่ม numeric ครอบคลุมงานคำนวณและ rounding ทั่วไป function กลุ่ม networking อย่าง `cidrsubnet` เฉพาะเจาะจงกับการตัดแบ่ง address range ซึ่งเจอบ่อยมากเวลาทำงานกับ Azure virtual network
+
+```hcl
+variable "vnet_address_space" {
+  type        = string
+  description = "CIDR block for the virtual network"
+  default     = "10.0.0.0/16"
+}
+
+locals {
+  # cidrsubnet(prefix, newbits, netnum) carves a /16 into /24 subnets
+  subnet_web_cidr = cidrsubnet(var.vnet_address_space, 8, 0) # 10.0.0.0/24
+  subnet_app_cidr = cidrsubnet(var.vnet_address_space, 8, 1) # 10.0.1.0/24
+  subnet_db_cidr  = cidrsubnet(var.vnet_address_space, 8, 2) # 10.0.2.0/24
+
+  # format() builds a name from a template; join() flattens a list into a string
+  name_prefix   = format("%s-%s", var.environment, var.project)
+  dns_servers   = join(",", ["10.0.0.4", "10.0.0.5"])
+
+  # merge() combines maps, later arguments winning on key conflicts
+  vm_tags = merge(
+    { Project = var.project, Environment = var.environment },
+    { Tier = "web" },
+  )
+
+  # lookup() reads a map key with a fallback instead of erroring on a miss
+  region_short_name = lookup(
+    { eastus = "eus", eastus2 = "eus2", westeurope = "weu" },
+    var.location,
+    "unk",
+  )
+
+  # contains() checks membership without writing a for expression
+  is_allowed_region = contains(["eastus", "eastus2", "westeurope"], var.location)
+}
+
+resource "azurerm_virtual_network" "main" {
+  name                = "${local.name_prefix}-vnet"
+  address_space       = [var.vnet_address_space]
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+}
+
+resource "azurerm_subnet" "web" {
+  name                 = "${local.name_prefix}-web-subnet"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = [local.subnet_web_cidr]
+}
+```
+
+`cidrsubnet` ควรใช้เวลาทำความเข้าใจสักหน่อย มันรับ CIDR block ตั้งต้น จำนวน bit ที่จะขยาย prefix เพิ่ม และหมายเลข subnet แล้ว return CIDR block ใหม่ที่ไม่ทับกับตัวอื่น `cidrsubnet("10.0.0.0/16", 8, 0)` ขยาย `/16` เพิ่ม 8 bit กลายเป็น `/24` แล้วเลือก block ที่ศูนย์ ได้ `10.0.0.0/24` ส่งค่า `1` เป็น argument ที่สามจะได้ `10.0.1.0/24` ไปเรื่อย ๆ การคำนวณ subnet range สามอันแบบนี้ครั้งเดียวใน `locals` ทำให้ทุก `azurerm_subnet` resource อ้างอิง local ที่มีชื่อ แทนที่จะพิมพ์ CIDR literal เองแล้วต้องมานั่งเช็คว่าทับกันหรือเปล่า
+
+## terraform console: เช็ค expression ก่อนใส่เข้า resource
+
+`terraform console` เปิด REPL แบบ interactive ที่ทำงานกับ configuration และ state ปัจจุบัน โดยไม่แก้ไขอะไรทั้งคู่ มันคือวิธีที่เร็วที่สุดในการตอบคำถามว่า expression นี้ evaluate ออกมาเป็นอะไรจริง ๆ ก่อนที่จะ paste มันเข้าไปใน resource argument ที่ถ้าพิมพ์ผิดแล้วจะสังเกตเห็นได้ยากและแพงกว่ามาก
+
+```bash
+$ terraform console
+> join("-", ["dev", "payments", "web"])
+"dev-payments-web"
+> cidrsubnet("10.0.0.0/16", 8, 1)
+"10.0.1.0/24"
+> contains(["eastus", "eastus2", "westeurope"], "westeurope")
+true
+> var.vnet_address_space
+"10.0.0.0/16"
+> exit
+```
+
+ทุกบรรทัดที่พิมพ์ที่ prompt `>` จะถูก evaluate หนึ่งครั้งแล้ว print ออกมา เหมือนกับที่ expression ตอน plan จะ resolve จริง โดยใช้ค่าจริงที่มีอยู่แล้วใน variable กับ state ของเรา ไม่มีขั้นตอน `apply` และไม่มี side effect ใด ๆ `exit` หรือ Ctrl-D ก็แค่ปิด session เท่านั้น นี่คือ tool ที่ควรหยิบมาใช้ทุกครั้งที่ call `cidrsubnet` หรือการ `merge` สอง map ดูผิดปกติใน `plan` diff แล้วอยากแยก expression นั้นออกมาทดสอบเดี่ยว ๆ ก่อนไปแตะ resource block จริง
+
+## Conditional expressions: เลือกระหว่างสองค่า
+
+conditional expression มีสามส่วน `condition` ที่ต้อง evaluate ออกมาเป็น `true` หรือ `false` ค่าที่จะใช้เมื่อเป็น `true` และค่าที่จะใช้เมื่อเป็น `false` เขียนเป็น `condition ? true_val : false_val` มันคือ branching construct ระดับ value เดียวที่ Terraform มี — ไม่มี `if` statement มีแต่ expression ที่ resolve ออกมาเป็นหนึ่งในสองค่า
+
+```hcl
+locals {
+  vm_size = var.environment == "prod" ? "Standard_D8s_v3" : "Standard_D2s_v3"
+
+  vm_tier_tag = upper(var.environment == "prod" ? "critical" : "standard")
+}
+
+resource "azurerm_linux_virtual_machine" "web" {
+  name                = "${local.name_prefix}-web"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  size                = local.vm_size
+  admin_username      = "azureuser"
+
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = file("~/.ssh/id_rsa.pub")
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+
+  tags = {
+    Tier = local.vm_tier_tag
+  }
+}
+```
+
+`local.vm_size` เลือก virtual machine size ที่ใหญ่ขึ้นเฉพาะตอน `prod` เท่านั้น ที่อื่น fallback ไปใช้ค่า default ที่เล็กกว่า แทนที่สิ่งที่ปกติแล้วต้องเขียน `variable` default สองตัวที่เกือบเหมือนกัน หรือทำ lookup table สำหรับตัวเลือกแบบ binary `local.vm_tier_tag` ต่อ conditional เข้ากับ function call โดยตรง conditional จะ resolve ออกมาเป็น `"critical"` หรือ `"standard"` ก่อน แล้ว `upper()` ค่อยแปลง string ที่ชนะนั้นก่อนจะไปกำหนดใน tag การ nest กันแบบนี้เป็นเรื่องปกติ — conditional ก็แค่ expression ตัวหนึ่ง มันปรากฏที่ไหนก็ได้ที่ expression ใช้งานได้ รวมถึงเป็น argument ของ function อื่นด้วย
+
+## dynamic blocks: nested block จำนวนไม่แน่นอนภายใน resource เดียว
+
+`count` กับ `for_each` บน resource (บทถัดไปจะพูดถึง) เป็นตัวตัดสินว่าจะสร้าง resource ทั้งก้อนกี่ copy `dynamic` block แก้ปัญหาที่เกี่ยวข้องกันแต่ต่างกันคนละเรื่อง คือสร้าง nested block ที่ซ้ำกันจำนวนไม่แน่นอนภายใน resource เดียว โดยขับเคลื่อนจาก collection หนึ่ง `azurerm_network_security_group` เป็นตัวอย่างที่ดี มันรับ `security_rule` block ได้ตั้งแต่ศูนย์อันขึ้นไป และจำนวน rule ปกติแล้วมาจาก list ที่ caller ควบคุม ไม่ใช่จำนวนคงที่ที่รู้ล่วงหน้า
+
+```hcl
+variable "allowed_ports" {
+  type        = list(number)
+  description = "TCP ports allowed inbound on the network security group"
+  default     = [22, 443, 8080]
+}
+
+resource "azurerm_network_security_group" "web" {
+  name                = "${local.name_prefix}-web-nsg"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+
+  dynamic "security_rule" {
+    for_each = var.allowed_ports
+
+    content {
+      name                       = "allow-port-${security_rule.value}"
+      priority                   = 100 + security_rule.key
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = tostring(security_rule.value)
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    }
+  }
+}
+```
+
+`dynamic "security_rule"` block iterate ผ่าน `var.allowed_ports` แล้ว emit `security_rule` nested block หนึ่งอันต่อหนึ่ง element โดยไม่ต้องเขียน `security_rule { ... }` แยกสามครั้งเอง หรือต้องแก้ resource ทุกครั้งที่ port list เปลี่ยน ภายใน `content` ตัว `security_rule.value` คือ element ปัจจุบันของ list และ `security_rule.key` คือ index ของมัน ทั้งคู่ตั้งชื่อตาม block label โดย default เพิ่ม port ตัวที่สี่เข้าไปใน `allowed_ports` แล้ว `security_rule` block ตัวที่สี่จะโผล่ขึ้นมาใน `plan` ถัดไปเลย โดยไม่ต้องแก้ resource block เองเลย นี่คือความสะดวกแบบเดียวกับที่ `count`/`for_each` ให้ในระดับ resource ทั้งก้อน แต่ลึกลงไปอีกชั้น ใช้กับ block ที่อยู่ภายใน resource เดียว
+
+<Mermaid title="A conditional and a function call resolve to one value used in a resource argument" code={expressionResolutionDiagramAzure} />
+
+export const expressionResolutionDiagramAzure = `flowchart LR
+  a["var.environment"] --> b{"conditional: environment == prod ?"}
+  b -->|true| c["critical"]
+  b -->|false| d["standard"]
+  c --> e["upper() function call"]
+  d --> e
+  e --> f["local.vm_tier_tag"]
+  f --> g["azurerm_linux_virtual_machine.web tags"]`;
+
+<Callout title="The one-line takeaway">
+built-in **function** ของ Terraform แปลงและรวมค่าเข้าด้วยกันโดยไม่ต้องออกจาก configuration language เลย — function กลุ่ม string อย่าง `join`/`split`/`format` function กลุ่ม collection อย่าง `lookup`/`merge`/`contains` และ function กลุ่ม networking อย่าง `cidrsubnet` ไว้ตัดแบ่ง address space ของ Azure virtual network ออกเป็น subnet **`terraform console`** คือ REPL แบบ interactive ที่ทำงานกับ configuration และ state ปัจจุบัน เป็นวิธีที่เร็วที่สุดในการเช็คว่า expression หนึ่ง evaluate ออกมาเป็นอะไรก่อนใส่เข้า resource argument **conditional expression** (`condition ? true_val : false_val`) คือ branching construct ระดับ value เดียวที่ Terraform มี และ compose เข้ากับ function call ได้อย่างอิสระ **`dynamic`** block สร้าง nested block ที่ซ้ำกันจำนวนไม่แน่นอนภายใน resource เดียวจาก collection หนึ่ง — คนละปัญหากับ `count`/`for_each` บน resource ที่สร้าง resource instance ทั้งก้อนจำนวนไม่แน่นอน ซึ่งบทถัดไปจะพูดถึง
+</Callout>
+
+export const quizExpressionsFunctionsAzure = [
+  {
+    q: 'terraform console ใช้ทำอะไร',
+    options: [
+      'apply configuration โดยไม่ต้องเขียน plan file',
+      'REPL แบบ interactive ไว้ evaluate expression และ function กับ configuration และ state ปัจจุบัน โดยไม่แก้ไขอะไรทั้งคู่',
+      'format ไฟล์ HCL ให้เป็น canonical style',
+      'เข้ารหัส sensitive variable ก่อนที่มันจะไปอยู่ใน state',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'conditional expression ที่เขียนเป็น condition ? true_val : false_val มีสามส่วนอะไรบ้าง',
+    options: [
+      'variable, default, และ type constraint',
+      'boolean condition, ค่าที่ใช้เมื่อเป็น true, และค่าที่ใช้เมื่อเป็น false',
+      'resource, data source, และ provider',
+      'ชื่อ function, argument ของมัน, และ return type',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'ควรใช้ dynamic block แทน count หรือ for_each บน resource ทั้งก้อนเมื่อไหร่',
+    options: [
+      'เมื่อต้องการ resource instance ทั้งก้อนจำนวนไม่แน่นอน เช่น virtual machine หลายเครื่อง',
+      'เมื่อต้องการ nested block ที่ซ้ำกันจำนวนไม่แน่นอนภายใน resource เดียว เช่น security_rule หลายอันใน network security group เดียว',
+      'ไม่ต้องใช้เลย dynamic block กับ count ใช้แทนกันได้ทุกกรณี',
+      'ใช้ได้แค่ตอนที่ resource นั้นไม่มี argument อื่นเลย',
+    ],
+    answer: 1,
+  },
+  {
+    q: 'cidrsubnet(var.vnet_address_space, 8, 1) ทำอะไร',
+    options: [
+      'ลบ subnet แรกออกจาก virtual network',
+      'ขยาย CIDR prefix ตั้งต้นเพิ่ม 8 bit แล้ว return subnet block ที่ index 1 โดยไม่แตะ infrastructure จริงเลย',
+      'สร้าง virtual network resource ใหม่บน Azure',
+      'รวมสอง CIDR block เข้าเป็น range ใหญ่ขึ้นอันเดียว',
+    ],
+    answer: 1,
+  },
+];
+
+<Quiz client:visible id="variables-and-data-flow/expressions-functions-and-conditionals" questions={quizExpressionsFunctionsAzure} />
+
+<ProgressTracker client:visible id="variables-and-data-flow/expressions-functions-and-conditionals" />
