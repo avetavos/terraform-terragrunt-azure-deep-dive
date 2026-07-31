@@ -19,7 +19,7 @@ pipeline มาตรฐานสำหรับ infrastructure รัน `plan`
 pattern ที่ทีมส่วนใหญ่ลงเอยด้วยกันนั้นคล้าย CI/CD ของ application แต่มีจุดต่างสำคัญตรงว่าแต่ละ stage ทำอะไรจริง ๆ
 
 - **เปิดหรืออัปเดต pull request** → รัน `terraform plan` (หรือ `terragrunt run --all plan` สำหรับ setup ที่มีหลาย unit ใน Terragrunt) แล้ว post diff ที่ได้เป็น comment บน pull request ยังไม่มีอะไรเปลี่ยนบน Azure จริง ๆ ตรงนี้เป็นแค่ dry run ที่หน้าที่เดียวคือทำให้ change ที่เสนอมามองเห็นได้ก่อนที่ใครจะกด approve
-- **merge เข้า main** → รัน `terraform apply` (หรือ `terragrunt run --all apply`) จาก pipeline เอง ไม่ใช่จาก laptop ของใคร สำหรับ production โดยเฉพาะ step นี้มักถูก gate ไว้ด้วย manual approval reviewer หรือทีมที่กำหนดต้องกด "approve" ใน CI system ก่อนที่ apply job จะรันได้ ถึงแม้ plan จะถูก review ไปแล้วตอน pull request
+- **merge เข้า main** → รัน `terraform apply` (หรือ `terragrunt run --all apply`) จาก pipeline เอง ไม่ใช่จาก laptop ของใคร สำหรับ production โดยเฉพาะ step นี้มักถูก gate ไว้ด้วย manual approval reviewer หรือทีมที่กำหนดต้องกด "approve" ใน CI system ก่อนที่ apply job จะรันได้ ถึงแม้จะ review plan ไปแล้วตอน pull request
 
 ```yaml
 name: terraform
@@ -75,9 +75,9 @@ jobs:
 
 ## ทำไม plan ต้อง review ละเอียดกว่า code diff ทั่วไป
 
-pull request ของ application code จะถูก review เรื่อง logic, test, และ style worst case คือ bug หลุดไปแล้วต้อง roll back แต่ infrastructure `apply` ทำอะไรที่ code deploy ทำไม่ได้ คือทำลาย resource จริงที่มี state บน Azure แล้วสร้างขึ้นใหม่ทั้งหมด บางครั้งแค่เพราะ change บรรทัดเดียว
+pull request ของ application code จะได้รับการ review เรื่อง logic, test, และ style worst case คือ bug หลุดไปแล้วต้อง roll back แต่ infrastructure `apply` ทำอะไรที่ code deploy ทำไม่ได้ คือทำลาย resource จริงที่มี state บน Azure แล้วสร้างขึ้นใหม่ทั้งหมด บางครั้งแค่เพราะ change บรรทัดเดียว
 
-Terraform เรียกสิ่งนี้ว่า **forced replacement** argument บางตัวของ resource บางประเภทอัปเดตแบบ in place ไม่ได้ เปลี่ยนมันแปลว่า provider ไม่มี API call สำหรับ "แก้ attribute นี้" มีแต่ "ทำลายแล้วสร้างใหม่" การเปลี่ยนชื่อ `azurerm_linux_virtual_machine`, การเปลี่ยน `account_tier` ของ storage account หรือการย้าย resource บางตัวไป `location` อื่นก็เข้าข่ายนี้ แล้วแต่ resource เมื่อเจอแบบนี้ `terraform plan` จะทำเครื่องหมาย resource นั้นด้วย `-/+` แทนที่จะเป็น `~` แบบ in-place
+Terraform เรียกสิ่งนี้ว่า **forced replacement** argument บางตัวของ resource บางประเภทอัปเดตแบบ in place ไม่ได้ เปลี่ยนค่าเหล่านั้นแปลว่า provider ไม่มี API call สำหรับ "แก้ attribute นี้" มีแต่ "ทำลายแล้วสร้างใหม่" การเปลี่ยนชื่อ `azurerm_linux_virtual_machine`, การเปลี่ยน `account_tier` ของ storage account หรือการย้าย resource บางตัวไป `location` อื่นก็เข้าข่ายนี้ แล้วแต่ resource เมื่อเจอแบบนี้ `terraform plan` จะทำเครื่องหมาย resource นั้นด้วย `-/+` แทนที่จะเป็น `~` แบบ in-place
 
 ```bash
 # terraform plan output — this is the line to stop and read carefully
@@ -93,7 +93,7 @@ Terraform เรียกสิ่งนี้ว่า **forced replacement** a
 
 ## OIDC credential แบบ short-lived แทน client secret ที่เก็บไว้
 
-pipeline รุ่นเก่าเก็บ Azure AD application client secret แบบ long-lived ไว้เป็น CI secret แล้วส่งให้ `terraform login` หรือ `azurerm` provider block ใช้ทุกครั้งที่รัน secret นั้นใช้ได้ทั้ง `plan` และ `apply` เหมือนกันหมด ซึ่งนั่นแหละคือปัญหา ถ้ามันหลุดออกไปเมื่อไหร่ จาก log ที่ config ผิด, dependency ที่ถูก compromise, หรือ workflow file ที่ echo environment variable ออกมา มันก็ยังใช้งานได้ต่อไปจนกว่าจะมีคน rotate หรือ revoke ด้วยมือ
+pipeline รุ่นเก่าเก็บ Azure AD application client secret แบบ long-lived ไว้เป็น CI secret แล้วส่งให้ `terraform login` หรือ `azurerm` provider block ใช้ทุกครั้งที่รัน secret นั้นใช้ได้ทั้ง `plan` และ `apply` เหมือนกันหมด ซึ่งนั่นแหละคือปัญหา ถ้าหลุดออกไปเมื่อไหร่ จาก log ที่ config ผิด, dependency ที่ถูก compromise, หรือ workflow file ที่ echo environment variable ออกมา ก็ยังใช้งานได้ต่อไปจนกว่าจะมีคน rotate หรือ revoke ด้วยมือ
 
 practice ปัจจุบันแทนที่ secret นั้นด้วย **OIDC ผ่าน federated credential** บางคนเรียกว่า Workload Identity Federation สำหรับ Azure AD GitHub Actions ส่ง identity token แบบ short-lived ที่ sign ด้วย cryptographic ให้ Azure AD ได้ในทุก workflow run **federated credential** ที่ config ไว้บน Azure AD App Registration (หรือ user-assigned managed identity) เชื่อถือ token issuer ของ GitHub เฉพาะ repository และ branch ที่กำหนด `azure/login` action แลก token นั้นเป็น Azure credential ชั่วคราวที่ scope ไว้กับ role ที่กำหนด อายุเท่ากับ job นั้นเท่านั้น ไม่มากไปกว่านั้น
 
@@ -119,7 +119,7 @@ jobs:
         run: terraform plan
 ```
 
-`client-id`, `tenant-id`, และ `subscription-id` เป็นแค่ identifier ไม่ใช่ secret มันแค่บอก Azure AD ว่าจะใช้ App Registration และ subscription ไหน ที่เก็บเป็น GitHub Actions secret ก็เพื่อความสะดวกและ scope environment เท่านั้น ไม่ใช่เพราะตัวมันเองมี sensitivity ไม่ต้องมี Azure client secret ที่เก็บเป็น CI secret เลยสักตัว ไม่มีอะไร long-lived ให้หลุด ให้ rotate หรือให้ลืม `permissions: id-token: write` คือตัวที่ทำให้ workflow ขอ identity token นั้นได้ตั้งแต่แรก ถ้าไม่มีบรรทัดนี้ การแลก OIDC ก็ไม่มีอะไรให้ยื่นให้ Azure AD
+`client-id`, `tenant-id`, และ `subscription-id` เป็นแค่ identifier ไม่ใช่ secret แค่บอก Azure AD ว่าจะใช้ App Registration และ subscription ไหน ที่เก็บเป็น GitHub Actions secret ก็เพื่อความสะดวกและ scope environment เท่านั้น ไม่ใช่เพราะตัวค่าเองมี sensitivity ไม่ต้องมี Azure client secret ที่เก็บเป็น CI secret เลยสักตัว ไม่มีอะไร long-lived ให้หลุด ให้ rotate หรือให้ลืม `permissions: id-token: write` คือตัวที่ทำให้ workflow ขอ identity token นั้นได้ตั้งแต่แรก ถ้าไม่มีบรรทัดนี้ การแลก OIDC ก็ไม่มีอะไรให้ยื่นให้ Azure AD
 
 <Mermaid title="pull request trigger plan ให้ review, merge เข้า main trigger apply หลัง approval gate, OIDC federated credential ส่ง credential แบบ short-lived ให้ทั้งสองฝั่ง" code={cicdPipelineDiagram} />
 
@@ -159,10 +159,10 @@ export const quizCicdPipeline = [
   {
     q: '-/+ ข้าง resource ใน terraform plan output แปลว่าอะไร',
     options: [
-      'resource จะถูก update in place โดยไม่มี downtime',
+      'resource จะ update in place โดยไม่มี downtime',
       'resource ต้องถูกทำลายแล้วสร้างใหม่ เพราะ argument ที่เปลี่ยนไป force ให้ replace แทนที่จะ update in place',
       'Terraform หาไม่ได้ว่า resource เปลี่ยนไปหรือเปล่า',
-      'resource จะถูก import จาก infrastructure ที่มีอยู่แล้ว',
+      'resource จะ import จาก infrastructure ที่มีอยู่แล้ว',
     ],
     answer: 1,
   },
@@ -170,7 +170,7 @@ export const quizCicdPipeline = [
     q: 'ทำไม OIDC federated credential ถึงดีกว่า Azure client secret แบบ long-lived ที่เก็บเป็น CI secret',
     options: [
       'federated credential ช้ากว่าแต่ปลอดภัยกว่า เลยใช้เฉพาะ production เท่านั้น',
-      'มันให้ azure/login ได้ credential แบบ short-lived และ scope เฉพาะแต่ละ run โดยเชื่อถือ identity token ที่ sign มาจาก GitHub ไม่ต้องเก็บหรือ rotate client secret แบบ long-lived ใน CI เลย',
+      'ทำให้ azure/login ได้ credential แบบ short-lived และ scope เฉพาะแต่ละ run โดยเชื่อถือ identity token ที่ sign มาจาก GitHub ไม่ต้องเก็บหรือ rotate client secret แบบ long-lived ใน CI เลย',
       'federated credential ทำให้ไม่ต้องมี Azure AD App Registration เลย',
       'client secret แบบ long-lived จำเป็นสำหรับให้ terraform apply ทำงานได้เท่านั้น',
     ],

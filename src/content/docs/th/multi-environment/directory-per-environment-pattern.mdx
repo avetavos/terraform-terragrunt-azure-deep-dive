@@ -1,6 +1,6 @@
 ---
 title: 'The Directory-per-Environment Pattern'
-description: 'การให้แต่ละ environment มี directory, backend, และ provider block ของตัวเองให้ isolation จริงบน Azure ยังไง และปัญหา duplication ใหม่ที่มันสร้างขึ้นมา'
+description: 'การให้แต่ละ environment มี directory, backend, และ provider block ของตัวเองให้ isolation จริงบน Azure ยังไง และปัญหา duplication ใหม่ที่ตามมา'
 sidebar:
   order: 3
 ---
@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในหนึ่งประโยค
 
-แทนที่จะใช้ configuration เดียวสลับไปมาระหว่าง workspace, directory-per-environment pattern ให้ dev, staging, และ prod แต่ละอันมี directory จริงของตัวเอง มี backend และ provider block ของตัวเอง ชี้ไปที่ Azure resource group ของตัวเองหรือแม้แต่ subscription ของตัวเอง ในขณะที่ทุกอันเรียก module ที่แชร์กันตัวเดียวสำหรับ resource จริง
+แทนที่จะใช้ configuration เดียวสลับไปมาระหว่าง workspace, directory-per-environment pattern ให้ dev, staging, และ prod แต่ละอันมี directory จริงของตัวเอง มี backend และ provider block ของตัวเอง ชี้ไปที่ Azure resource group ของตัวเองหรือแม้แต่ subscription ของตัวเอง โดยที่ทุกอันเรียก module ที่แชร์กันตัวเดียวสำหรับ resource จริง
 
 ## แยกจริง: หนึ่ง directory ต่อหนึ่ง environment
 
@@ -73,7 +73,7 @@ provider "azurerm" {
 }
 ```
 
-`prod` คือเคสที่แข็งกว่า สงวนไว้สำหรับ environment ที่ต้องการแยกแบบแข็งจริง ๆ คือ `subscription_id` ที่ต่างกันไปเลย ทำให้ความผิดพลาดใน `dev` หรือ `staging` แม้แต่ authenticate เข้าไปที่ resource ของ prod ก็ยังทำไม่ได้ ไม่ต้องพูดถึงการแก้ไขมัน
+`prod` คือเคสที่แข็งกว่า สงวนไว้สำหรับ environment ที่ต้องการแยกแบบแข็งจริง ๆ คือ `subscription_id` ที่ต่างกันไปเลย ทำให้ความผิดพลาดใน `dev` หรือ `staging` แม้แต่ authenticate เข้าไปที่ resource ของ prod ก็ยังทำไม่ได้ ไม่ต้องพูดถึงการเข้าไปแก้ไข
 
 ```hcl
 # environments/prod/backend.tf
@@ -120,11 +120,11 @@ module "app" {
 
 ## สิ่งที่ pattern นี้แก้ได้จริง
 
-นี่คือ isolation จริง ไม่ใช่แค่ naming convention แบบที่ workspace ให้มา `dev` กับ `staging` แต่ละอันตกอยู่ใน **resource group** ของตัวเอง ทำให้ `terraform destroy` ที่พลาดใน environment หนึ่งเข้าไปแตะ resource ใน resource group ของอีก environment ไม่ได้ และแต่ละอันมี RBAC scope ของตัวเอง `prod` ไปไกลกว่านั้นอีก คือนั่งอยู่ใน **subscription** ของตัวเอง ซึ่งเป็นเส้นแบ่งที่แข็งกว่าของ Azure คือ billing แยก, quota default แยก, และชุด credential ที่ต่างกันจริง ๆ ที่ต้องใช้แม้แต่จะแตะมันได้ ต่างจาก workspace ตรงที่ไม่มี `provider` block ที่แชร์กันอยู่ที่ไหนเลยที่จะปล่อยให้ `terraform apply` ที่พลาดข้ามไปถึงอีก environment ได้ Terraform run ของ directory `dev` ไม่มี credential path ไปยัง subscription ของ prod เลย
+นี่คือ isolation จริง ไม่ใช่แค่ naming convention แบบที่ workspace ให้มา `dev` กับ `staging` แต่ละอันตกอยู่ใน **resource group** ของตัวเอง ทำให้ `terraform destroy` ที่พลาดใน environment หนึ่งเข้าไปแตะ resource ใน resource group ของอีก environment ไม่ได้ และแต่ละอันมี RBAC scope ของตัวเอง `prod` ไปไกลกว่านั้นอีก คือนั่งอยู่ใน **subscription** ของตัวเอง ที่เป็นเส้นแบ่งที่แข็งกว่าของ Azure คือ billing แยก, quota default แยก, และชุด credential ที่ต่างกันจริง ๆ ที่ต้องใช้แม้แต่จะแตะให้ได้ ต่างจาก workspace ตรงที่ไม่มี `provider` block ที่แชร์กันอยู่ที่ไหนเลยที่จะปล่อยให้ `terraform apply` ที่พลาดข้ามไปถึงอีก environment ได้ Terraform run ของ directory `dev` ไม่มี credential path ไปยัง subscription ของ prod เลย
 
 ## duplication ที่กลับมาใหม่
 
-ลองดู `backend.tf` สามไฟล์ข้างบนใกล้ ๆ มันเหมือนกันทุกโครงสร้าง คือ backend type เดียวกัน, storage account เดียวกัน, container เดียวกัน ต่างกันแค่สองบรรทัดพอดี คือ `key` กับ `subscription_id` เรื่องเดียวกันเกิดกับ `module "app"` block ใน `main.tf` ทุกไฟล์ คือ argument `source` ถูก copy-paste แบบตัวอักษรเป๊ะ ๆ เข้าไปในทุก environment และถ้า module นั้นย้ายที่ไปวันหนึ่ง หรือถูก pin ด้วย `version` ทุก environment directory ต้องแก้แบบเดียวกันด้วยมือ นี่คือภาพสะท้อนกลับของปัญหา workspace workspace แก้ duplication ได้ด้วยการแชร์ทุกอย่างและ isolate แทบไม่ได้อะไรเลย ส่วน directory-per-environment แก้ isolation ได้ด้วยการแยกทุกอย่าง รวมถึง boilerplate ที่ไม่เคยต้องต่างกันเลยด้วย
+ลองดู `backend.tf` สามไฟล์ข้างบนใกล้ ๆ ทั้งสามเหมือนกันทุกโครงสร้าง คือ backend type เดียวกัน, storage account เดียวกัน, container เดียวกัน ต่างกันแค่สองบรรทัดพอดี คือ `key` กับ `subscription_id` เรื่องเดียวกันเกิดกับ `module "app"` block ใน `main.tf` ทุกไฟล์ คือ argument `source` ถูก copy-paste แบบตัวอักษรเป๊ะ ๆ เข้าไปในทุก environment และถ้า module นั้นย้ายที่ไปวันหนึ่ง หรือถูก pin ด้วย `version` ทุก environment directory ต้องแก้แบบเดียวกันด้วยมือ นี่คือภาพสะท้อนกลับของปัญหา workspace workspace แก้ duplication ได้ด้วยการแชร์ทุกอย่างและ isolate แทบไม่ได้อะไรเลย ส่วน directory-per-environment แก้ isolation ได้ด้วยการแยกทุกอย่าง รวมถึง boilerplate ที่ไม่เคยต้องต่างกันเลยด้วย
 
 <Mermaid title="Three separate environment directories give dev and staging their own resource group and prod its own subscription, but the backend, provider, and module source blocks are nearly identical copy-paste across all three" code={dirPerEnvDiagram} />
 
@@ -140,17 +140,17 @@ export const dirPerEnvDiagram = `flowchart LR
   prodDir -.-> dup`;
 
 <Callout title="สรุปหนึ่งบรรทัด">
-directory-per-environment pattern ให้ทุก environment มี directory, backend, และ provider block ที่แยกกันจริง ๆ ให้ dev กับ staging นั่งอยู่ใน Azure **resource group** ของตัวเอง และ prod นั่งอยู่ใน **subscription** ของตัวเองที่เป็นเส้นแบ่งแข็งกว่า เพื่อ blast-radius isolation จริง ในขณะที่ทุกอันเรียก **module** ที่แชร์กันตัวเดียวสำหรับ resource จริง ต้นทุนคือ backend configuration, provider configuration, และ `source` argument ของ module จบลงด้วยการซ้ำกันแทบทุกตัวอักษรข้ามทุก environment directory เอาปัญหา copy-paste maintenance ตัวเดิมที่ module นี้เปิดเรื่องด้วยกลับมาอีกครั้ง แค่ในสเกลที่เล็กลง
+directory-per-environment pattern ให้ทุก environment มี directory, backend, และ provider block ที่แยกกันจริง ๆ ให้ dev กับ staging นั่งอยู่ใน Azure **resource group** ของตัวเอง และ prod นั่งอยู่ใน **subscription** ของตัวเองที่เป็นเส้นแบ่งแข็งกว่า เพื่อ blast-radius isolation จริง โดยที่ทุกอันเรียก **module** ที่แชร์กันตัวเดียวสำหรับ resource จริง ต้นทุนคือ backend configuration, provider configuration, และ `source` argument ของ module จบลงด้วยการซ้ำกันแทบทุกตัวอักษรข้ามทุก environment directory เอาปัญหา copy-paste maintenance ตัวเดิมที่ module นี้เปิดเรื่องด้วยกลับมาอีกครั้ง แค่ในสเกลที่เล็กลง
 </Callout>
 
 export const quizDirPerEnv = [
   {
     q: 'directory-per-environment pattern แก้อะไรที่ Terraform workspace แก้ไม่ได้',
     options: [
-      'มันทำให้ไม่ต้องมี Terraform state file เลย',
+      'ทำให้ไม่ต้องมี Terraform state file เลย',
       'isolation จริง เพราะแต่ละ environment มี backend ของตัวเอง มี provider block ของตัวเอง และชี้ไปที่ Azure resource group ของตัวเองหรือแม้แต่ subscription ของตัวเองได้',
-      'มันทำให้ทุก environment sync กันเองอัตโนมัติเสมอ',
-      'มันทำให้ไม่ต้องใช้ input variable เลย',
+      'ทำให้ทุก environment sync กันเองอัตโนมัติเสมอ',
+      'ทำให้ไม่ต้องใช้ input variable เลย',
     ],
     answer: 1,
   },

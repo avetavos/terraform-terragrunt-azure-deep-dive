@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 `source` argument บน `module` block บอก Terraform ว่าจะไปเอา code ของ module นั้นมาจากไหน และ infrastructure จริงที่ไม่ trivial ถูกสร้างขึ้นด้วยการประกอบ module เล็ก ๆ หลายตัวเข้าด้วยกัน — `output` ของ module หนึ่งถูกส่งตรงเข้าไปเป็น input variable ของอีก module
 
@@ -40,7 +40,7 @@ module "vnet_from_git" {
 
 ## ประกอบ module เข้าด้วยกัน: output หนึ่งกลายเป็น input ของอีกตัว
 
-configuration แบบ flat ตัวเดียวที่มี resource เป็นร้อยอ่านยากและเอาไปใช้ซ้ำไม่ได้เลย infrastructure จริงถูกสร้างจาก module เล็ก ๆ ที่ focus เฉพาะเรื่อง แล้วต่อกันผ่าน output และ input ของมัน module `vnet` expose identifier ที่ module อื่นต้องใช้:
+configuration แบบ flat ตัวเดียวที่มี resource เป็นร้อยอ่านยากและเอาไปใช้ซ้ำไม่ได้เลย infrastructure จริงถูกสร้างจาก module เล็ก ๆ ที่ focus เฉพาะเรื่อง แล้วต่อกันผ่าน output และ input ของแต่ละตัว module `vnet` expose identifier ที่ module อื่นต้องใช้:
 
 ```hcl
 # modules/vnet/outputs.tf
@@ -55,7 +55,7 @@ output "subnet_ids" {
 }
 ```
 
-module `virtual-machine` ประกาศ input ที่มันต้องใช้เพื่อ launch เข้าไปใน network นั้น:
+module `virtual-machine` ประกาศ input ที่ต้องใช้เพื่อ launch เข้าไปใน network นั้น:
 
 ```hcl
 # modules/virtual-machine/variables.tf
@@ -87,7 +87,7 @@ module "web_server" {
 }
 ```
 
-ไม่มี module ไหนต้องรู้ว่าอีกตัวมีอยู่ module `vnet` ไม่รู้เลยว่าจะมี module `virtual-machine` มา consume output ของมัน และ module `virtual-machine` ก็ไม่รู้ว่า `vnet_id` ของมันมาจาก module หรือเป็นแค่ string ที่ hardcode ไว้ root configuration คือจุดเดียวที่รู้จักทั้งสอง module และเชื่อมมันเข้าด้วยกัน
+ไม่มี module ไหนต้องรู้ว่าอีกตัวมีอยู่ module `vnet` ไม่รู้เลยว่าจะมี module `virtual-machine` มา consume output ของตัวเอง และ module `virtual-machine` ก็ไม่รู้ว่า `vnet_id` ที่ได้รับมาจาก module หรือเป็นแค่ string ที่ hardcode ไว้ root configuration คือจุดเดียวที่รู้จักทั้งสอง module และเชื่อมทั้งสองเข้าด้วยกัน
 
 ## public Terraform Registry ในฐานะตัวช่วยเพิ่ม productivity
 
@@ -106,7 +106,7 @@ module "vnet" {
 }
 ```
 
-ถึงอย่างนั้น "ใช้กันแพร่หลาย" ก็ไม่เหมือนกับ "เชื่อได้แบบไม่ต้องดู" ก่อนจะเอา Registry module มาสร้าง production infrastructure ควรอ่านก่อนว่ามันสร้างอะไรจริง ๆ — resource ของมัน default value ของมัน และ role assignment ใด ๆ ที่มัน provision ให้โดยอัตโนมัติ Registry module ก็ยังเป็น code ของคนอื่นที่รันด้วย credential ของ Azure ที่เป็นของคุณ
+ถึงอย่างนั้น "ใช้กันแพร่หลาย" ก็ไม่เหมือนกับ "เชื่อได้แบบไม่ต้องดู" ก่อนจะเอา Registry module มาสร้าง production infrastructure ควรอ่านก่อนว่า module สร้างอะไรจริง ๆ — resource, default value และ role assignment ใด ๆ ที่ provision ให้โดยอัตโนมัติ Registry module ก็ยังเป็น code ของคนอื่นที่รันด้วย credential ของ Azure ที่เป็นของคุณ
 
 <Mermaid title="A vnet module's outputs feeding a virtual-machine module's inputs from the root configuration" code={moduleCompositionDiagram} />
 
@@ -131,7 +131,7 @@ export const moduleCompositionDiagram = `flowchart LR
   vmin2 --> vmmod`;
 
 <Callout title="The one-line takeaway">
-`source` argument บอก Terraform ว่า code ของ module อยู่ที่ไหน — **local relative path**, public **Terraform Registry** หรือ **Git URL** ที่มี `?ref=` ระบุ version ที่ต้องการก็ได้ — และ infrastructure จริงถูกสร้างด้วยการ **compose** module เล็ก ๆ ที่ focus เฉพาะเรื่องเข้าด้วยกัน โดย `output` ของ module หนึ่งถูกส่งตรงเข้าไปเป็น input variable ของอีก module ภายใน root configuration ที่เป็นคนต่อมันเข้าด้วยกัน community module ของ public Registry ที่ maintain ดี อย่าง `Azure/vnet/azurerm` และ `Azure/naming/azurerm` มักเป็นจุดเริ่มต้นที่ดีกว่าการเขียน pattern ที่พบบ่อยขึ้นมาเอง แต่คุณก็ยังควรอ่านว่า Registry module สร้างอะไรจริง ๆ ก่อนจะเชื่อใน production
+`source` argument บอก Terraform ว่า code ของ module อยู่ที่ไหน — **local relative path**, public **Terraform Registry** หรือ **Git URL** ที่มี `?ref=` ระบุ version ที่ต้องการก็ได้ — และ infrastructure จริงถูกสร้างด้วยการ **compose** module เล็ก ๆ ที่ focus เฉพาะเรื่องเข้าด้วยกัน โดย `output` ของ module หนึ่งถูกส่งตรงเข้าไปเป็น input variable ของอีก module ภายใน root configuration ที่เป็นคนต่อเข้าด้วยกัน community module ของ public Registry ที่ maintain ดี อย่าง `Azure/vnet/azurerm` และ `Azure/naming/azurerm` มักเป็นจุดเริ่มต้นที่ดีกว่าการเขียน pattern ที่พบบ่อยขึ้นมาเอง แต่คุณก็ยังควรอ่านว่า Registry module สร้างอะไรจริง ๆ ก่อนจะเชื่อใน production
 </Callout>
 
 export const quizModuleComposition = [
@@ -156,11 +156,11 @@ export const quizModuleComposition = [
     answer: 1,
   },
   {
-    q: 'module vnet ในตัวอย่างนี้ต้องรู้หรือไม่ว่าจะมี virtual-machine module มา consume output ของมัน',
+    q: 'module vnet ในตัวอย่างนี้ต้องรู้หรือไม่ว่าจะมี virtual-machine module มา consume output ของตัวเอง',
     options: [
       'ต้องรู้ vnet module ต้อง import virtual-machine module เพื่อ expose output ที่เข้ากันได้',
       'ไม่ต้องรู้ vnet module แค่ expose output ของตัวเอง และ root configuration คือจุดเดียวที่เชื่อมสอง module เข้าด้วยกัน',
-      'ต้องรู้ Terraform บังคับให้ module ประกาศว่า module ไหนจะ consume output ของมันได้บ้าง',
+      'ต้องรู้ Terraform บังคับให้ module ประกาศว่า module ไหนจะ consume output ของตัวเองได้บ้าง',
       'ไม่ต้องรู้ เพราะ module composition ทำงานได้เฉพาะตอนที่ทั้งสอง module มาจาก source เดียวกัน',
     ],
     answer: 1,

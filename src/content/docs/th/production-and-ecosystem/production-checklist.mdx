@@ -18,7 +18,7 @@ setup Terraform และ Terragrunt ที่พร้อมใช้งาน�
 
 แต่ละข้อด้านล่างย้อนกลับไปหา failure mode จริงที่ lesson ใด lesson หนึ่งของ course นี้ถูกสร้างขึ้นมาเพื่อแก้
 
-- **remote `azurerm` backend พร้อม blob-lease locking ตั้งแต่วันแรก** local state แปลว่า disk เครื่องเดียวคือสำเนาความจริงหนึ่งเดียวของทั้ง Azure footprint และถ้า engineer สองคนรัน `apply` พร้อมกันก็ทำให้มัน corrupt ได้ นี่คือเหตุผลทั้งหมดที่ module State Management มีอยู่
+- **remote `azurerm` backend พร้อม blob-lease locking ตั้งแต่วันแรก** local state แปลว่า disk เครื่องเดียวคือสำเนาความจริงหนึ่งเดียวของทั้ง Azure footprint และถ้า engineer สองคนรัน `apply` พร้อมกันก็ทำให้ state corrupt ได้ นี่คือเหตุผลทั้งหมดที่ module State Management มีอยู่
 - **version ของ provider ที่ pin ผ่าน `.terraform.lock.hcl`, version ของ module ที่ pin ไว้กับ tag หรือ version constraint** provider หรือ module ที่ไม่ pin อาจ resolve ไปเป็น major version ใหม่แบบเงียบ ๆ ในครั้งถัดไปที่ `init` รัน เปลี่ยน behavior ที่ไม่มีใครขอกลางคันของ change ที่ไม่เกี่ยวข้องกันเลย
 - **`plan` ถูก review ใน CI ก่อนทุก `apply` โดยจับตาดู resource replacement ที่ไม่คาดคิดโดยเฉพาะ** `-/+` ใน plan แปลว่าทำลายแล้วสร้างใหม่บน resource จริงของ Azure ที่มี state การ review plan แบบ code diff ธรรมดาพลาดบรรทัดที่สำคัญที่สุดไปเลย
 - **ค่า sensitive เก็บนอก Terraform variable และ state ในจุดที่มี secrets-manager data source ให้ใช้ได้ และ Azure RBAC จำกัดคนที่อ่าน state container ได้อย่างเข้มงวด** `sensitive = true` แค่ redact CLI output เท่านั้น การป้องกันจริงคือจำกัด read access ให้ backend และลดสิ่งที่ต้องพิมพ์ลง variable ตั้งแต่แรก
@@ -54,7 +54,7 @@ inputs = {
 }
 ```
 
-Terragrunt อ่าน `dependency` block นี้แล้วหาลำดับ apply ที่ถูกต้องเอง `terragrunt run --all apply` จะ apply `vnet` ก่อน อ่าน output `subnet_id` จริงของมันเมื่อมันมีอยู่แล้ว แล้วค่อยรัน `vm` ด้วยค่าจริงนั้นเป็น input ไม่มีใครต้อง hardcode ลำดับหรือต้องจำเองว่าจะ apply unit ไหนก่อนหลัง block `mock_outputs` สำคัญเฉพาะกับ `plan` มันให้ `plan` ของ `vm` รันผ่านได้สะอาดแม้ก่อนที่ `vnet` จะเคยถูก apply เลย โดยใช้ค่า placeholder แทนที่จะ fail เพราะ output จริงยังไม่มีอยู่
+Terragrunt อ่าน `dependency` block นี้แล้วหาลำดับ apply ที่ถูกต้องเอง `terragrunt run --all apply` จะ apply `vnet` ก่อน อ่าน output `subnet_id` จริงเมื่อมีค่าแล้ว แล้วค่อยรัน `vm` ด้วยค่าจริงนั้นเป็น input ไม่มีใครต้อง hardcode ลำดับหรือต้องจำเองว่าจะ apply unit ไหนก่อนหลัง block `mock_outputs` สำคัญเฉพาะกับ `plan` เพราะทำให้ `plan` ของ `vm` รันผ่านได้สะอาดแม้ก่อนที่ `vnet` จะเคยถูก apply เลย โดยใช้ค่า placeholder แทนที่จะ fail เพราะ output จริงยังไม่มีอยู่
 
 ## ภาพรวมแบบ end-to-end
 
@@ -148,7 +148,7 @@ export const quizProductionChecklist = [
     q: 'ทำไม production Terraform setup ต้องมี remote azurerm backend พร้อม locking ตั้งแต่วันแรก แทนที่จะใช้ local state',
     options: [
       'local state อ่านช้ากว่า remote state ในทุกกรณี',
-      'local state แปลว่าเครื่องเดียวถือสำเนาความจริงหนึ่งเดียวของ Azure footprint และ apply พร้อมกันจาก engineer หลายคนทำให้มัน corrupt ได้ถ้าไม่มี locking',
+      'local state แปลว่าเครื่องเดียวถือสำเนาความจริงหนึ่งเดียวของ Azure footprint และ apply พร้อมกันจาก engineer หลายคนทำให้ state corrupt ได้ถ้าไม่มี locking',
       'remote backend จำเป็นสำหรับให้ terraform validate รันได้เลย',
       'local state เก็บ resource ได้ไม่เกินไม่กี่ตัว',
     ],
@@ -158,7 +158,7 @@ export const quizProductionChecklist = [
     q: 'ทำไม plan ที่ review ใน CI ถึงต้องจับตาดู resource replacement ที่ไม่คาดคิดโดยเฉพาะ',
     options: [
       'เพราะ replacement fail เสมอและเสียเวลา CI',
-      'เพราะ -/+ ใน plan แปลว่า resource ของ Azure ที่มี state จะถูกทำลายแล้วสร้างใหม่ ซึ่งอาจแปลว่ามี data loss หรือ downtime จริงทันทีที่มีคน approve',
+      'เพราะ -/+ ใน plan แปลว่า resource ของ Azure ที่มี state จะโดนทำลายแล้วสร้างใหม่ ซึ่งอาจแปลว่ามี data loss หรือ downtime จริงทันทีที่มีคน approve',
       'เพราะ replacement เป็น change type เดียวที่ Terraform apply สำเร็จได้',
       'เพราะ plan ที่ review แล้วเกี่ยวข้องแค่กับ environment ที่ไม่ใช่ production เท่านั้น',
     ],
@@ -167,10 +167,10 @@ export const quizProductionChecklist = [
   {
     q: 'Terragrunt dependency block ให้อะไรที่การ apply unit ตามลำดับด้วยมือให้ไม่ได้',
     options: [
-      'มันตัดความจำเป็นของ state file แยกต่อ unit ออกไป',
-      'มันให้ unit หนึ่งใช้ output จริงของอีก unit ได้อัตโนมัติ โดย Terragrunt คำนวณลำดับ apply ที่ถูกต้องเอง แทนที่จะพึ่งให้คนจำลำดับที่ถูกต้องด้วยมือ',
-      'มันแทนที่ความจำเป็นของ remote backend ไปเลยทั้งหมด',
-      'มันให้ unit หลายตัวใช้ terragrunt.hcl ไฟล์เดียวร่วมกันได้',
+      'ตัดความจำเป็นของ state file แยกต่อ unit ออกไป',
+      'ทำให้ unit หนึ่งใช้ output จริงของอีก unit ได้อัตโนมัติ โดย Terragrunt คำนวณลำดับ apply ที่ถูกต้องเอง แทนที่จะพึ่งให้คนจำลำดับที่ถูกต้องด้วยมือ',
+      'แทนที่ความจำเป็นของ remote backend ไปเลยทั้งหมด',
+      'ทำให้ unit หลายตัวใช้ terragrunt.hcl ไฟล์เดียวร่วมกันได้',
     ],
     answer: 1,
   },

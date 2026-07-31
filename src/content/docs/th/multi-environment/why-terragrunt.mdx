@@ -40,7 +40,7 @@ terraform apply
 
 ## Terragrunt คืออะไรจริง ๆ
 
-**Terragrunt** คือ wrapper บาง ๆ และ orchestrator ที่นั่งอยู่บนตัว binary จริงของ `terraform` (หรือ `tofu`) มันไม่ได้เพิ่ม resource syntax ใหม่ และโค้ด module ที่เขียนเพื่อสร้าง Azure resource จริง ๆ ยังคงเป็นสิ่งเดิมที่มันเป็นอยู่แล้ว คือ Terraform ธรรมดา ในไฟล์ `.tf` ธรรมดา ไม่เปลี่ยนแปลง
+**Terragrunt** คือ wrapper บาง ๆ และ orchestrator ที่นั่งอยู่บนตัว binary จริงของ `terraform` (หรือ `tofu`) ไม่ได้เพิ่ม resource syntax ใหม่ และโค้ด module ที่เขียนเพื่อสร้าง Azure resource จริง ๆ ยังคงเป็นสิ่งเดิมอยู่แล้ว คือ Terraform ธรรมดา ในไฟล์ `.tf` ธรรมดา ไม่เปลี่ยนแปลง
 
 สิ่งที่ Terragrunt เพิ่มเข้ามาคือ layer ที่อยู่เหนือโค้ดนั้น เล็งตรงไปที่ duplication ที่ directory-per-environment เอากลับมา แทนที่จะเขียน `backend.tf` กับ `provider.tf` ที่เหมือนกันแทบทุกตัวอักษรในทุก environment directory ด้วยมือ Terragrunt ให้ define backend และ provider configuration ครั้งเดียว จากศูนย์กลาง แล้ว generate รายละเอียดต่อ environment เช่น state `key`, `subscription_id`, resource group จาก definition อันนั้นอันเดียว
 
@@ -59,7 +59,7 @@ remote_state {
 
 ## Terragrunt ไม่ใช่อะไร
 
-Terragrunt ไม่ใช่ fork ของ Terraform มันไม่ได้ compile ไปเป็น infrastructure-as-code language อื่น และมันไม่ใช่ตัวแทนของ `terraform` binary ทุกคำสั่ง Terragrunt สุดท้ายแล้ว shell out ไปเรียกคำสั่ง `terraform` หรือ `tofu` จริง ๆ เบื้องหลัง รันกับ provider เดียวกันและ state format เดียวกันที่ Terraform เข้าใจอยู่แล้ว
+Terragrunt ไม่ใช่ fork ของ Terraform ไม่ได้ compile ไปเป็น infrastructure-as-code language อื่น และไม่ใช่ตัวแทนของ `terraform` binary ทุกคำสั่ง Terragrunt สุดท้ายแล้ว shell out ไปเรียกคำสั่ง `terraform` หรือ `tofu` จริง ๆ เบื้องหลัง รันกับ provider เดียวกันและ state format เดียวกันที่ Terraform เข้าใจอยู่แล้ว
 
 ```bash
 # Every terragrunt command wraps a real terraform (or tofu) command
@@ -78,7 +78,7 @@ export const terragruntGapDiagram = `flowchart LR
   terragrunt --> realTf["Real terraform / tofu binary actually runs"]`;
 
 <Callout title="สรุปหนึ่งบรรทัด">
-Terraform workspace แก้ **DRY reuse** ได้ แลกมาด้วย isolation ที่อ่อนแอ ส่วน directory-per-environment pattern แก้ **isolation** ได้ แลกมาด้วย backend, provider, และ module-source boilerplate ที่ซ้ำกัน และ Terraform เองไม่มี primitive แบบ native ที่ให้ทั้งสองอย่างพร้อมกัน **Terragrunt** ปิดช่องว่างนั้นไม่ใช่ด้วยการแทนที่ Terraform แต่ด้วยการ wrap มัน มันคือ orchestrator บาง ๆ ที่ generate backend และ provider configuration จาก definition ศูนย์กลางอันเดียว ส่ง input ต่อ environment และเข้าใจการเรียงลำดับข้าม unit ที่ apply แยกกัน ในขณะที่ทุกคำสั่งที่มันรัน ยังคง shell out ไปหา `terraform` หรือ `tofu` binary จริงเบื้องหลังเสมอ
+Terraform workspace แก้ **DRY reuse** ได้ แลกมาด้วย isolation ที่อ่อนแอ ส่วน directory-per-environment pattern แก้ **isolation** ได้ แลกมาด้วย backend, provider, และ module-source boilerplate ที่ซ้ำกัน และ Terraform เองไม่มี primitive แบบ native ที่ให้ทั้งสองอย่างพร้อมกัน **Terragrunt** ปิดช่องว่างนั้นไม่ใช่ด้วยการแทนที่ Terraform แต่ด้วยการ wrap เข้าไป เป็น orchestrator บาง ๆ ที่ generate backend และ provider configuration จาก definition ศูนย์กลางอันเดียว ส่ง input ต่อ environment และเข้าใจการเรียงลำดับข้าม unit ที่ apply แยกกัน โดยทุกคำสั่งที่รัน ยังคง shell out ไปหา `terraform` หรือ `tofu` binary จริงเบื้องหลังเสมอ
 </Callout>
 
 export const quizWhyTerragrunt = [
@@ -93,10 +93,10 @@ export const quizWhyTerragrunt = [
     answer: 1,
   },
   {
-    q: 'Terragrunt คืออะไรจริง ๆ เทียบกับที่คนมักเข้าใจผิดว่ามันคืออะไร',
+    q: 'Terragrunt คืออะไรจริง ๆ เทียบกับที่คนมักเข้าใจผิด',
     options: [
       'fork ของ Terraform ที่มี resource syntax และ state format ของตัวเอง',
-      'wrapper บาง ๆ และ orchestrator รอบตัว terraform หรือ tofu binary จริง ไม่ใช่ตัวแทนของมันหรือ infrastructure-as-code language ใหม่',
+      'wrapper บาง ๆ และ orchestrator รอบตัว terraform หรือ tofu binary จริง ไม่ใช่ตัวแทนของ binary นั้นหรือ infrastructure-as-code language ใหม่',
       'hosted service ที่แทนที่การรัน terraform apply ไปเลยทั้งหมด',
       'linter ที่เช็คแค่ style ของโค้ด Terraform โดยไม่รันอะไรเลย',
     ],
@@ -106,7 +106,7 @@ export const quizWhyTerragrunt = [
     q: 'Terragrunt แก้ปัญหาแบบไหนเพิ่มเติมที่ dependency graph ภายในของ Terraform configuration เดียวแก้ไม่ได้',
     options: [
       'จัด format โค้ด HCL ให้สม่ำเสมอข้ามไฟล์',
-      'เรียงลำดับและส่ง output ให้ถูกต้องข้ามหลาย unit ของ infrastructure ที่ apply แยกกันเป็นอิสระต่อกัน ซึ่งเป็นขอบเขตที่ dependency graph ของ terraform apply หนึ่งครั้งมองข้ามไปไม่ถึง',
+      'เรียงลำดับและส่ง output ให้ถูกต้องข้ามหลาย unit ของ infrastructure ที่ apply แยกกันเป็นอิสระต่อกัน ซึ่งอยู่นอกขอบเขตที่ dependency graph ของ terraform apply หนึ่งครั้งมองข้ามไปไม่ถึง',
       'เลือกว่า resource จะ deploy ไปที่ Azure region ไหน',
       'ตรวจสอบ provider version constraint',
     ],

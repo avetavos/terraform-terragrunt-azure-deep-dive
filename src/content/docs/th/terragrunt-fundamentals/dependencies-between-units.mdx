@@ -10,9 +10,9 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## แนวคิดในหนึ่งประโยค
+## ไอเดียในหนึ่งประโยค
 
-`dependency` block ทำให้ unit หนึ่งอ่าน output ของอีก unit ข้าม state boundary ที่แยกทั้งสองออกจากกันได้ โดย `mock_outputs` ทำหน้าที่แทนค่าจริงไปก่อน จนกว่า unit อีกฝั่งจะถูก apply จริง
+`dependency` block ทำให้ unit หนึ่งอ่าน output ของอีก unit ข้าม state boundary ที่แยกทั้งสองออกจากกันได้ โดย `mock_outputs` ทำหน้าที่แทนค่าจริงไปก่อน จนกว่าจะ apply unit อีกฝั่งจริง
 
 ## ทำไม module composition อย่างเดียวไม่พออีกต่อไป
 
@@ -22,7 +22,7 @@ unit ตั้งใจทำลายสมมติฐานนั้น unit 
 
 ## dependency block: ข้าม state boundary
 
-`dependency` block ระบุชื่อ unit อื่นด้วย directory ของมัน แล้ว expose ทุก output ของ unit นั้นออกมา
+`dependency` block ระบุชื่อ unit อื่นด้วย directory ของ unit นั้น แล้ว expose ทุก output ของ unit นั้นออกมา
 
 ```hcl
 # vm/terragrunt.hcl
@@ -57,13 +57,13 @@ dependency "vnet" {
 }
 ```
 
-เมื่อ output จริงยังไม่พร้อมใช้งาน Terragrunt จะแทนที่ด้วยค่าใน `mock_outputs` แทนการ fail ไปเลย ทำให้ `plan` แสดงสิ่งที่ unit `vm` จะสร้างได้ แม้ว่า `vnet` จะยังไม่มีอยู่จริงก็ตาม `mock_outputs_allowed_terraform_commands` จำกัดว่า command ไหนบ้างที่อนุญาตให้ fallback ไปใช้ mock ได้ การระบุแค่ `plan` ในตัวอย่างนี้ หมายความว่า `apply` ยัง fail อย่างชัดเจนถ้า dependency จริงยังไม่ถูก apply ซึ่งเป็น safety net ที่ต้องการพอดี การ preview plan กับ subnet ID ปลอมนั้นไม่มีปัญหา แต่การสร้าง virtual machine จริงกับค่าปลอมนั้นไม่ควรเกิดขึ้นเด็ดขาด
+เมื่อ output จริงยังไม่พร้อมใช้งาน Terragrunt จะแทนที่ด้วยค่าใน `mock_outputs` แทนการ fail ไปเลย ทำให้ `plan` แสดงสิ่งที่ unit `vm` จะสร้างได้ แม้ว่า `vnet` จะยังไม่มีอยู่จริงก็ตาม `mock_outputs_allowed_terraform_commands` จำกัดว่า command ไหนบ้างที่อนุญาตให้ fallback ไปใช้ mock ได้ การระบุแค่ `plan` ในตัวอย่างนี้ หมายความว่า `apply` ยัง fail อย่างชัดเจนถ้า dependency จริงยังไม่ถูก apply นั่นคือ safety net ที่ต้องการพอดี การ preview plan กับ subnet ID ปลอมนั้นไม่มีปัญหา แต่การสร้าง virtual machine จริงกับค่าปลอมนั้นไม่ควรเกิดขึ้นเด็ดขาด
 
 ## ลำดับการ apply ถูกคำนวณอัตโนมัติ
 
-ไม่มีตรงไหนใน `terragrunt.hcl` ของ unit `vm` ที่บอกว่า "apply `vnet` ก่อน" Terragrunt คำนวณเรื่องนี้ให้เองทั้งหมด ทุก `dependency` block ที่มันเจอระหว่างสแกน tree ของ unit ต่าง ๆ จะกลายเป็น edge หนึ่งใน dependency graph และเมื่อรัน operation ข้าม unit หลายตัวพร้อมกัน Terragrunt จะใช้ graph นั้นเป็นเงื่อนไขลำดับ `vnet` รับประกันว่าจะ apply เสร็จก่อนที่ `vm` จะเริ่ม เพราะ `vm` ประกาศ `dependency` ไปยังมัน ไม่ต้อง hard-code ลำดับนี้หรือจำเพื่อรัน command ตามลำดับที่ถูกต้องด้วยมือเลย บทถัดไปจะพูดถึง command ที่ใช้ trigger การรันข้ามหลาย unit จริง ๆ
+ไม่มีตรงไหนใน `terragrunt.hcl` ของ unit `vm` ที่บอกว่า "apply `vnet` ก่อน" Terragrunt คำนวณเรื่องนี้ให้เองทั้งหมด ทุก `dependency` block ที่เจอระหว่างสแกน tree ของ unit ต่าง ๆ จะกลายเป็น edge หนึ่งใน dependency graph และเมื่อรัน operation ข้าม unit หลายตัวพร้อมกัน Terragrunt จะใช้ graph นั้นเป็นเงื่อนไขลำดับ `vnet` รับประกันว่าจะ apply เสร็จก่อนที่ `vm` จะเริ่ม เพราะ `vm` ประกาศ `dependency` ชี้ไปหา ไม่ต้อง hard-code ลำดับนี้หรือจำเพื่อรัน command ตามลำดับที่ถูกต้องด้วยมือเลย บทถัดไปจะพูดถึง command ที่ใช้ trigger การรันข้ามหลาย unit จริง ๆ
 
-<Mermaid title="output ของ vnet ไหลเข้า vm ผ่าน dependency block โดย mock_outputs เชื่อมช่องว่างก่อน vnet จะถูก apply" code={dependencyDiagram} />
+<Mermaid title="output ของ vnet ไหลเข้า vm ผ่าน dependency block โดย mock_outputs เชื่อมช่องว่างก่อน apply vnet" code={dependencyDiagram} />
 
 export const dependencyDiagram = `flowchart LR
   vnetunit["vnet unit (own state)"]
@@ -74,7 +74,7 @@ export const dependencyDiagram = `flowchart LR
   mock["mock_outputs (plan only, before vnet is applied)"] -.-> dep`;
 
 <Callout title="สรุปในหนึ่งบรรทัด">
-`dependency` block เช่น `dependency "vnet" { config_path = "../vnet" }` คือวิธีที่ unit หนึ่งข้าม state boundary ที่แยกจากกัน ซึ่ง module composition ธรรมดาข้ามไม่ได้ โดย expose output ของอีก unit ออกมาเป็น `dependency.vnet.outputs.subnet_id` ให้ใช้ใน `inputs` block ของ unit ที่บริโภคมันได้ **mock_outputs** ที่ถูกจำกัดด้วย `mock_outputs_allowed_terraform_commands` ให้เฉพาะ command บางตัว ทำให้ `plan` สำเร็จด้วยค่าจำลองได้ แม้ dependency จะยังไม่ถูก apply จริง ในขณะที่ยังปฏิเสธการแทนค่า mock สำหรับ `apply` จริงอยู่ดี Terragrunt สร้าง dependency graph จากทุก `dependency` block ที่พบทั่วทั้ง tree ของ unit แล้วใช้ graph นั้นคำนวณลำดับ apply ที่ถูกต้องโดยอัตโนมัติ ทำให้ unit ที่พึ่งพา unit อื่นถูก apply ทีหลังเสมอ โดยไม่ต้องมีใคร hard-code ลำดับนั้นเอง
+`dependency` block เช่น `dependency "vnet" { config_path = "../vnet" }` คือวิธีที่ unit หนึ่งข้าม state boundary ที่แยกจากกัน ซึ่ง module composition ธรรมดาข้ามไม่ได้ โดย expose output ของอีก unit ออกมาเป็น `dependency.vnet.outputs.subnet_id` ให้ใช้ใน `inputs` block ของ unit ที่ consume ได้ **mock_outputs** ที่ถูกจำกัดด้วย `mock_outputs_allowed_terraform_commands` ให้เฉพาะ command บางตัว ทำให้ `plan` สำเร็จด้วยค่าจำลองได้ แม้ dependency จะยังไม่ถูก apply จริง แต่ยังปฏิเสธการแทนค่า mock สำหรับ `apply` จริงอยู่ดี Terragrunt สร้าง dependency graph จากทุก `dependency` block ที่พบทั่วทั้ง tree ของ unit แล้วใช้ graph นั้นคำนวณลำดับ apply ที่ถูกต้องโดยอัตโนมัติ ทำให้ unit ที่พึ่งพา unit อื่นถูก apply ทีหลังเสมอ โดยไม่ต้องมีใคร hard-code ลำดับนั้นเอง
 </Callout>
 
 export const quizDependencies = [
@@ -112,7 +112,7 @@ export const quizDependencies = [
     q: 'ใน dependency "vnet" { config_path = "../vnet" } นั้น config_path ชี้ไปที่อะไร',
     options: [
       'ไฟล์ configuration ของ Terraform provider',
-      'directory ของ Terragrunt unit อีกตัวที่ output ของมันจะถูก expose ให้ unit นี้ใช้',
+      'directory ของ Terragrunt unit อีกตัว ที่จะ expose output ให้ unit นี้ใช้',
       'configuration ของ remote_state backend',
       'hook script ที่รันก่อน apply',
     ],

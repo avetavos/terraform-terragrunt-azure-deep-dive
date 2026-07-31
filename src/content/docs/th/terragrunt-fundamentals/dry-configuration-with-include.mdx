@@ -10,7 +10,7 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## แนวคิดในหนึ่งประโยค
+## ไอเดียในหนึ่งประโยค
 
 `include` block ร่วมกับ `find_in_parent_folders()` ทำให้ unit ดึงทุกอย่างที่ shared config file กำหนดไว้มาใช้ได้เลย และ `locals` ร่วมกับ `read_terragrunt_config()` ก็ขยายแนวคิดเดียวกันนี้ไปยัง intermediate file ที่อยู่ระหว่าง root กับ unit ได้อีกกี่ชั้นก็ได้
 
@@ -62,7 +62,7 @@ inputs = {
 }
 ```
 
-`read_terragrunt_config()` จะ parse ไฟล์ที่ส่งเข้าไป แล้วคืนค่าเป็น map ของทุกอย่างที่ประกาศไว้ในไฟล์นั้น ทำให้ `local.subscription_vars.locals.subscription_id` เข้าถึง `locals` block ของ `subscription.hcl` ได้โดยตรง สังเกตว่านี่เป็นกลไกคนละแบบกับ `include` โดย `include` จะสืบทอด block อย่าง `remote_state` มาทั้งหมด ในขณะที่ `read_terragrunt_config()` ให้ unit เข้าถึงค่าเฉพาะจุดจากไฟล์ที่เลือกจะอ่าน โดยไม่ต้องสืบทอดทั้งไฟล์ ความต่างนี้เองที่ทำให้มันเหมาะกับ intermediate file `root.hcl` ยังคง apply กับทุก unit ทั่วทั้ง tree ผ่าน `include` ส่วน `subscription.hcl` ก็แค่ต้องถูกอ่านโดย unit จำนวนหนึ่งที่อยู่ภายใต้ subscription นั้นจริง ๆ เท่านั้น
+`read_terragrunt_config()` จะ parse ไฟล์ที่ส่งเข้าไป แล้วคืนค่าเป็น map ของทุกอย่างที่ประกาศไว้ในไฟล์นั้น ทำให้ `local.subscription_vars.locals.subscription_id` เข้าถึง `locals` block ของ `subscription.hcl` ได้โดยตรง สังเกตว่านี่เป็นกลไกคนละแบบกับ `include` โดย `include` จะสืบทอด block อย่าง `remote_state` มาทั้งหมด ส่วน `read_terragrunt_config()` ให้ unit เข้าถึงค่าเฉพาะจุดจากไฟล์ที่เลือกจะอ่าน โดยไม่ต้องสืบทอดทั้งไฟล์ ความต่างนี้เองที่ทำให้เหมาะกับ intermediate file `root.hcl` ยังคง apply กับทุก unit ทั่วทั้ง tree ผ่าน `include` ส่วน `subscription.hcl` ก็แค่ต้องถูกอ่านโดย unit จำนวนหนึ่งที่อยู่ภายใต้ subscription นั้นจริง ๆ เท่านั้น
 
 ## inputs: เทียบเท่ากับไฟล์ tfvars ใน Terragrunt
 
@@ -75,7 +75,7 @@ inputs = {
 }
 ```
 
-ทุก key ใน `inputs` ต้องตรงกับ variable ที่ underlying Terraform module ประกาศไว้จริง Terragrunt จะส่งแต่ละค่าผ่านไปเหมือนถูกส่งด้วย `-var` เพราะ `inputs` เป็น HCL ธรรมดา มันจึง reference `locals`, ผลลัพธ์จาก `read_terragrunt_config()` หรือในบทถัดไปของ module นี้ คือ output ของ unit อื่นได้ ซึ่งไฟล์ `.tfvars` แบบ static ทำแบบนี้ไม่ได้เลย
+ทุก key ใน `inputs` ต้องตรงกับ variable ที่ underlying Terraform module ประกาศไว้จริง Terragrunt จะส่งแต่ละค่าผ่านไปเหมือนถูกส่งด้วย `-var` เพราะ `inputs` เป็น HCL ธรรมดา จึง reference `locals`, ผลลัพธ์จาก `read_terragrunt_config()` หรือในบทถัดไปของ module นี้ คือ output ของ unit อื่นได้ ซึ่งไฟล์ `.tfvars` แบบ static ทำแบบนี้ไม่ได้เลย
 
 <Mermaid title="root.hcl, intermediate subscription.hcl และ unit ที่รวมทั้งสองระดับเข้าด้วยกัน" code={includeDiagram} />
 
@@ -88,7 +88,7 @@ export const includeDiagram = `flowchart TD
   unit --> inputs["inputs = merge of root, subscription, and unit values"]`;
 
 <Callout title="สรุปในหนึ่งบรรทัด">
-`include "root" { path = find_in_parent_folders("root.hcl") } ` block สืบทอดทุก block ที่กำหนดไว้ใน shared root file มาทั้งหมด โดย unit ไม่ต้องเขียนซ้ำเลย และ `find_in_parent_folders()` จะไต่ directory tree ขึ้นไปจนเจอไฟล์นั้นไม่ว่า unit จะอยู่ลึกแค่ไหน **locals** block ร่วมกับ `read_terragrunt_config(find_in_parent_folders(...))` ขยายแนวคิดเดียวกันไปยัง intermediate file เช่น `subscription.hcl` ต่อหนึ่ง subscription ทำให้ unit เข้าถึงค่าเฉพาะจุดที่แชร์กันได้ โดยไม่ต้องสืบทอดทั้งไฟล์ ส่วน **inputs** block คือสิ่งที่เทียบเท่ากับไฟล์ `.tfvars` ใน Terragrunt ส่งค่าตรงเข้าไปยัง variable ของ underlying Terraform module และเพราะมันเป็น HCL ธรรมดา มันจึงรวมค่าจาก root, intermediate file และตัว unit เองเข้าด้วยกันในที่เดียวได้
+`include "root" { path = find_in_parent_folders("root.hcl") } ` block สืบทอดทุก block ที่กำหนดไว้ใน shared root file มาทั้งหมด โดย unit ไม่ต้องเขียนซ้ำเลย และ `find_in_parent_folders()` จะไต่ directory tree ขึ้นไปจนเจอไฟล์นั้นไม่ว่า unit จะอยู่ลึกแค่ไหน **locals** block ร่วมกับ `read_terragrunt_config(find_in_parent_folders(...))` ขยายแนวคิดเดียวกันไปยัง intermediate file เช่น `subscription.hcl` ต่อหนึ่ง subscription ทำให้ unit เข้าถึงค่าเฉพาะจุดที่แชร์กันได้ โดยไม่ต้องสืบทอดทั้งไฟล์ ส่วน **inputs** block คือสิ่งที่เทียบเท่ากับไฟล์ `.tfvars` ใน Terragrunt ส่งค่าตรงเข้าไปยัง variable ของ underlying Terraform module และเพราะเป็น HCL ธรรมดา จึงรวมค่าจาก root, intermediate file และตัว unit เองเข้าด้วยกันในที่เดียวได้
 </Callout>
 
 export const quizIncludeAndDry = [

@@ -70,11 +70,11 @@ resource "azurerm_linux_virtual_machine" "app" {
 }
 ```
 
-select `dev` แล้ว VM จะถูกตั้งชื่อ `app-dev` และขนาด `Standard_B1s` select `prod` ไฟล์ `.tf` เดียวกันนี้จะได้ `app-prod` ขนาด `Standard_D2s_v5` โดยไม่มีโค้ดซ้ำที่ไหนเลย นี่คือจุดขายของ workspace คือมีชุด `.tf` เดียว มีที่แก้ bug จุดเดียว และความต่างต่อ environment ขับเคลื่อนด้วย workspace ไหนกำลัง active อยู่ล้วน ๆ
+select `dev` แล้ว VM จะได้ชื่อ `app-dev` และขนาด `Standard_B1s` select `prod` ไฟล์ `.tf` เดียวกันนี้จะได้ `app-prod` ขนาด `Standard_D2s_v5` โดยไม่มีโค้ดซ้ำที่ไหนเลย นี่คือจุดขายของ workspace คือมีชุด `.tf` เดียว มีที่แก้ bug จุดเดียว และความต่างต่อ environment ขับเคลื่อนด้วย workspace ไหนกำลัง active อยู่ล้วน ๆ
 
 ## สิ่งที่ workspace ไม่ isolate
 
-นี่คือจุดที่พลาดง่าย `terraform workspace new` สร้างแค่ state file ใหม่เท่านั้น มันไม่ได้สร้าง backend configuration ใหม่ ไม่ได้สร้าง provider configuration ใหม่ และไม่ได้สร้าง Azure subscription ใหม่ ทั้งหมดนั้นอยู่ใน `.tf` code เดียวกัน แชร์กันทุกตัวอักษรข้ามทุก workspace
+นี่คือจุดที่พลาดง่าย `terraform workspace new` สร้างแค่ state file ใหม่เท่านั้น ไม่ได้สร้าง backend configuration ใหม่ ไม่ได้สร้าง provider configuration ใหม่ และไม่ได้สร้าง Azure subscription ใหม่ ทั้งหมดนั้นอยู่ใน `.tf` code เดียวกัน แชร์กันทุกตัวอักษรข้ามทุก workspace
 
 ```hcl
 terraform {
@@ -110,7 +110,7 @@ export const workspaceDiagram = `flowchart LR
   prodWs -.-> shared`;
 
 <Callout title="สรุปหนึ่งบรรทัด">
-Terraform **workspace** ให้แต่ละ environment ที่มีชื่อของตัวเองมี **state file** แยกกันของตัวเอง จากชุด `.tf` เดียวกัน และ `terraform.workspace` ให้ปรับชื่อ ขนาด และ tag ต่อ environment ได้ถูก ๆ แต่ workspace แชร์ **backend**, **provider**, และ Azure **subscription_id** เดียวกันข้ามทุก workspace ดังนั้นมันแก้ปัญหา DRY reuse ได้ดี แต่ปล่อยให้ isolation อ่อนแอ และความเสี่ยงจริงคือการ apply การเปลี่ยนแปลงที่ตั้งใจไว้สำหรับ environment หนึ่ง ขณะที่นั่งอยู่บน workspace ผิดโดยไม่รู้ตัว
+Terraform **workspace** ให้แต่ละ environment ที่มีชื่อของตัวเองมี **state file** แยกกันของตัวเอง จากชุด `.tf` เดียวกัน และ `terraform.workspace` ให้ปรับชื่อ ขนาด และ tag ต่อ environment ได้ถูก ๆ แต่ workspace แชร์ **backend**, **provider**, และ Azure **subscription_id** เดียวกันข้ามทุก workspace จึงแก้ปัญหา DRY reuse ได้ดี แต่ปล่อยให้ isolation อ่อนแอ และความเสี่ยงจริงคือการ apply การเปลี่ยนแปลงที่ตั้งใจไว้สำหรับ environment หนึ่ง ขณะที่นั่งอยู่บน workspace ผิดโดยไม่รู้ตัว
 </Callout>
 
 export const quizWorkspaces = [
@@ -118,7 +118,7 @@ export const quizWorkspaces = [
     q: 'การสร้าง Terraform workspace ใหม่ isolate อะไรจาก workspace อื่นจริง ๆ',
     options: [
       'Azure subscription แยกต่างหากสำหรับ workspace นั้น',
-      'state file แยกต่างหาก ในขณะที่ backend configuration, provider configuration, และ .tf code ยังคงแชร์กันอยู่',
+      'state file แยกต่างหาก ส่วน backend configuration, provider configuration, และ .tf code ยังคงแชร์กันอยู่',
       'copy ของ .tf source file แยกต่างหาก',
       'ชุด Azure credential แยกต่างหาก',
     ],

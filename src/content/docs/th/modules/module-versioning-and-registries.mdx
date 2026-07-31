@@ -10,13 +10,13 @@ import Callout from '../../../../components/Callout.astro';
 import Quiz from '../../../../components/Quiz.tsx';
 import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
-## The idea in one sentence
+## ไอเดียในหนึ่งประโยค
 
 module `source` ที่ไม่ pin version สามารถ resolve ไปเป็น version ใหม่กว่าเดิมแบบเงียบ ๆ ในครั้งถัดไปที่มีคนรัน `init` ดังนั้นการ pin `version` constraint คือวินัยเดียวกับที่คุณใช้กับ provider lock file อยู่แล้ว เพียงแต่เล็งไปที่ module code แทนที่จะเป็น provider code
 
 ## ทำไม module version ที่ไม่ pin ถึงเป็นความเสี่ยงแบบเงียบ ๆ
 
-module ที่มาจาก Registry หรือ Git tag ไม่ได้ถูก freeze ไว้กับที่เหมือน local relative path ถ้า `module` block ไม่มี `version` constraint การรัน `terraform init -upgrade` — หรือแม้แต่ `init` ใหม่ใน CI pipeline ที่ไม่เคยรันมาก่อน — สามารถดึง release ใหม่กว่าของ module นั้นเข้ามาโดยไม่มีใคร review changelog ของมันก่อน upgrade ที่ดูเหมือนเล็กน้อยสามารถเปลี่ยนชื่อ variable เปลี่ยน default หรือปรับโครงสร้าง resource ที่มันสร้างใหม่ทั้งหมด และไม่มีอะไรแสดงให้เห็นจนกว่า `plan` หรือ `apply` จะเริ่มทำงานต่างจากเมื่อวาน
+module ที่มาจาก Registry หรือ Git tag ไม่ได้ถูก freeze ไว้กับที่เหมือน local relative path ถ้า `module` block ไม่มี `version` constraint การรัน `terraform init -upgrade` — หรือแม้แต่ `init` ใหม่ใน CI pipeline ที่ไม่เคยรันมาก่อน — สามารถดึง release ใหม่กว่าของ module นั้นเข้ามาโดยไม่มีใคร review changelog ก่อน upgrade ที่ดูเหมือนเล็กน้อยสามารถเปลี่ยนชื่อ variable เปลี่ยน default หรือปรับโครงสร้าง resource ที่สร้างขึ้นใหม่ทั้งหมด และไม่มีอะไรแสดงให้เห็นจนกว่า `plan` หรือ `apply` จะเริ่มทำงานต่างจากเมื่อวาน
 
 ```hcl
 # unpinned - always resolves to the latest version on init -upgrade
@@ -25,7 +25,7 @@ module "vnet" {
 }
 ```
 
-นี่คือ failure mode เดียวกันเป๊ะกับที่ provider lock file มีไว้เพื่อป้องกัน แค่ขยับขึ้นไปอีกระดับหนึ่ง: แทนที่จะเป็น provider plugin ที่เปลี่ยนไปโดยที่คุณไม่รู้ตัว มันกลายเป็น implementation ภายในของ module เองที่เปลี่ยนไปโดยที่คุณไม่รู้ตัวแทน
+นี่คือ failure mode เดียวกันเป๊ะกับที่ provider lock file มีไว้เพื่อป้องกัน แค่ขยับขึ้นไปอีกระดับหนึ่ง: แทนที่จะเป็น provider plugin ที่เปลี่ยนไปโดยที่คุณไม่รู้ตัว กลายเป็น implementation ภายในของ module เองที่เปลี่ยนไปโดยที่คุณไม่รู้ตัวแทน
 
 ## pessimistic constraint operator: version = "~> 5.0"
 
@@ -39,7 +39,7 @@ module "vnet" {
 }
 ```
 
-`~> 5.0` แปลว่า "อนุญาต version ใด ๆ ที่มากกว่าหรือเท่ากับ `5.0` จนถึงแต่ไม่รวม `6.0`" พูดอีกแบบคือ มันให้ Terraform รับ patch และ minor release ภายในสาย `5.x` ได้ — bug fix กับของใหม่ที่ backward-compatible — แต่ปฏิเสธการกระโดดไป `6.0` แบบเงียบ ๆ เพราะ major version bump คือสัญญาณที่ผู้สร้าง module บอกคุณว่าให้เตรียมรับ breaking changes คุณยังเป็นคนเลือกเองว่าจะกระโดดตอนไหน และอ่าน changelog ของ module ก่อนได้
+`~> 5.0` แปลว่า "อนุญาต version ใด ๆ ที่มากกว่าหรือเท่ากับ `5.0` จนถึงแต่ไม่รวม `6.0`" พูดอีกแบบคือ ยอมให้ Terraform รับ patch และ minor release ภายในสาย `5.x` ได้ — bug fix กับของใหม่ที่ backward-compatible — แต่ปฏิเสธการกระโดดไป `6.0` แบบเงียบ ๆ เพราะ major version bump คือสัญญาณที่ผู้สร้าง module บอกคุณว่าให้เตรียมรับ breaking changes คุณยังเป็นคนเลือกเองว่าจะกระโดดตอนไหน และอ่าน changelog ของ module ก่อนได้
 
 ## private module source และการ publish module ของตัวเอง
 
@@ -82,7 +82,7 @@ export const quizModuleVersioning = [
       'ไม่มีความเสี่ยงเลย Terraform ใช้ version เดิมที่ใช้ครั้งแรกเสมอไม่ว่าจะมี constraint หรือไม่',
       'terraform init -upgrade ครั้งถัดไป หรือ init ใหม่ใน CI อาจดึง version ใหม่ที่มี breaking changes เข้ามาแบบเงียบ ๆ โดยไม่มีใคร review module changelog ก่อน',
       'มีผลแค่กับ output ของ terraform fmt เท่านั้น ไม่มีผลกับ plan หรือ apply',
-      'มันบังคับให้ caller ทุกคนของ module ต้องใช้ Terraform CLI version เดียวกันเป๊ะ',
+      'บังคับให้ caller ทุกคนของ module ต้องใช้ Terraform CLI version เดียวกันเป๊ะ',
     ],
     answer: 1,
   },

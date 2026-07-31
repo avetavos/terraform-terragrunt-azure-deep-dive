@@ -12,7 +12,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## ไอเดียในหนึ่งประโยค
 
-การตั้งค่าใดค่าหนึ่งเป็น `sensitive = true` แค่ซ่อนมันจาก terminal ของคุณ แต่ค่านั้นก็ยังนั่งอยู่แบบ plaintext ใน state file เหมือนเดิม ทางแก้จริง ๆ คือปกป้อง state backend เอง และเก็บ secret ที่อยู่ยาวนานให้ห่างจาก Terraform ไปเลยตั้งแต่แรก
+การตั้งค่าใดค่าหนึ่งเป็น `sensitive = true` แค่ซ่อนค่านั้นจาก terminal ของคุณ แต่ค่านั้นก็ยังนั่งอยู่แบบ plaintext ใน state file เหมือนเดิม ทางแก้จริง ๆ คือปกป้อง state backend เอง และเก็บ secret ที่อยู่ยาวนานให้ห่างจาก Terraform ไปเลยตั้งแต่แรก
 
 ## sensitive = true ทำอะไรจริง ๆ
 
@@ -30,9 +30,9 @@ output "db_connect_string" {
 }
 ```
 
-พอตั้ง `sensitive = true` แล้ว Terraform จะปิดบังค่านั้นทุกจุดที่มันควรจะโผล่ขึ้นมาบน terminal หรือใน CI log — มันจะ print `(sensitive value)` ใน output ของ `terraform plan` และ `terraform apply` แทนสตริงจริง และจะไม่ยอม print ค่าดิบจาก `terraform output` เว้นแต่คุณจะขอตรง ๆ ด้วย `terraform output db_connect_string` นี่คือ guardrail ที่มีประโยชน์จริง — มันช่วยกันไม่ให้ password เลื่อนผ่านหน้าจอใน shared CI log หรือ terminal ที่กำลัง screen-share อยู่โดยไม่ตั้งใจ
+พอตั้ง `sensitive = true` แล้ว Terraform จะปิดบังค่านั้นทุกจุดที่ค่านั้นจะโผล่ขึ้นมาบน terminal หรือใน CI log — โดย print `(sensitive value)` ใน output ของ `terraform plan` และ `terraform apply` แทนสตริงจริง และจะไม่ยอม print ค่าดิบจาก `terraform output` เว้นแต่คุณจะขอตรง ๆ ด้วย `terraform output db_connect_string` นี่คือ guardrail ที่มีประโยชน์จริง เพราะช่วยกันไม่ให้ password เลื่อนผ่านหน้าจอใน shared CI log หรือ terminal ที่กำลัง screen-share อยู่โดยไม่ตั้งใจ
 
-ประเด็นที่ควรพูดให้ชัดเจนไปเลยคือ `sensitive = true` เป็นฟีเจอร์ด้าน **display** ไม่ใช่ฟีเจอร์ด้านการเข้ารหัส ค่าถูกคำนวณ เก็บ และ diff โดย Terraform เหมือนกันทุกประการไม่ว่าคุณจะตั้ง sensitive หรือไม่ — มันยังถูกเขียนลง `terraform.tfstate` แบบ plaintext เต็ม ๆ ทั้ง tag ด้วย ใครก็ตามที่อ่านไฟล์ state ดิบได้ ไม่ว่าจากใน Azure Storage container, `.tfstate` บนเครื่อง local หรือจาก `terraform state pull` ก็เห็น password ตัวนั้นนั่งอยู่ใน JSON ตรง ๆ ไม่ว่าจะมี flag `sensitive` หรือไม่ก็ตาม
+ประเด็นที่ควรพูดให้ชัดเจนไปเลยคือ `sensitive = true` เป็นฟีเจอร์ด้าน **display** ไม่ใช่ฟีเจอร์ด้านการเข้ารหัส ค่าถูกคำนวณ เก็บ และ diff โดย Terraform เหมือนกันทุกประการไม่ว่าคุณจะตั้ง sensitive หรือไม่ — ค่ายังไปอยู่ใน `terraform.tfstate` แบบ plaintext เต็ม ๆ ทั้ง tag ด้วย ใครก็ตามที่อ่านไฟล์ state ดิบได้ ไม่ว่าจากใน Azure Storage container, `.tfstate` บนเครื่อง local หรือจาก `terraform state pull` ก็เห็น password ตัวนั้นนั่งอยู่ใน JSON ตรง ๆ ไม่ว่าจะมี flag `sensitive` หรือไม่ก็ตาม
 
 ```bash
 terraform state pull | grep -A3 db_connect_string
@@ -45,7 +45,7 @@ terraform state pull | grep -A3 db_connect_string
 
 เพราะการตั้งค่าเป็น sensitive ไม่ได้เอาค่านั้นออกจาก state การป้องกันจริง ๆ ต้องเกิดขึ้นที่ storage layer ให้ปฏิบัติกับ `terraform.tfstate` เหมือนเป็น secret ตัวหนึ่ง เหมือนที่คุณปฏิบัติกับไฟล์ `.env` ที่เต็มไปด้วย production credential
 
-- **Encryption at rest เปิดอยู่โดย default อยู่แล้ว** Azure Storage เข้ารหัสทุก object ที่ rest โดยอัตโนมัติ รวมถึงทุก version ของ state blob ของคุณ ไม่ว่าใครจะเรียก storage account API ก็ตาม คุณไม่ต้องเปิดอะไรเพิ่มเอง — มันคือ baseline ไม่ใช่คำตอบทั้งหมด
+- **Encryption at rest เปิดอยู่โดย default อยู่แล้ว** Azure Storage เข้ารหัสทุก object ที่ rest โดยอัตโนมัติ รวมถึงทุก version ของ state blob ของคุณ ไม่ว่าใครจะเรียก storage account API ก็ตาม คุณไม่ต้องเปิดอะไรเพิ่มเอง — นี่คือ baseline ไม่ใช่คำตอบทั้งหมด
 - **จำกัดว่าใครอ่าน container นี้ได้** Azure RBAC คือสิ่งที่หยุดคนที่ไม่มีสิทธิ์ไม่ให้เข้าถึง plaintext ได้จริง ๆ ไม่ว่า encryption at rest จะมีอยู่หรือไม่ก็ตาม — encryption at rest ป้องกันคนที่ไปแตะ disk ดิบโดยตรง ไม่ใช่ป้องกันคนที่มี Azure identity ถูกต้องแล้วเรียก storage API จำกัด access ให้แคบด้วย role อย่าง `Storage Blob Data Reader` ที่ assign แค่ระดับ resource group หรือ storage account ที่เก็บ state เท่านั้น ไม่ใช่ทั้ง subscription
 
 ```hcl
@@ -56,7 +56,7 @@ resource "azurerm_role_assignment" "state_reader" {
 }
 ```
 
-ถ้าเป็นไปได้ วิธีที่ดีกว่าคือหลีกเลี่ยงปัญหานี้ไปเลย อย่าใส่ secret ที่อยู่ยาวนานลงใน Terraform variable ตั้งแต่แรก ถ้าคุณดึงมันตอน apply ได้แทน `data` source ที่อ่านจาก Azure Key Vault จะดึงค่าปัจจุบันตอนที่ Terraform รัน โดยที่คุณไม่ต้องพิมพ์ secret ลงไฟล์ `.tf` หรือ `.tfvars` เลย
+ถ้าเป็นไปได้ วิธีที่ดีกว่าคือหลีกเลี่ยงปัญหานี้ไปเลย อย่าใส่ secret ที่อยู่ยาวนานลงใน Terraform variable ตั้งแต่แรก ถ้าคุณดึงค่าตอน apply ได้แทน `data` source ที่อ่านจาก Azure Key Vault จะดึงค่าปัจจุบันตอนที่ Terraform รัน โดยที่คุณไม่ต้องพิมพ์ secret ลงไฟล์ `.tf` หรือ `.tfvars` เลย
 
 ```hcl
 data "azurerm_key_vault_secret" "db_password" {
@@ -75,17 +75,17 @@ resource "azurerm_postgresql_flexible_server" "main" {
 }
 ```
 
-ต้องมองให้ชัดว่าวิธีนี้แก้อะไรได้และแก้อะไรไม่ได้ ค่า secret ที่ resolve แล้วยังไปจบที่ state entry ของ `azurerm_postgresql_flexible_server.main` อยู่ดี เพราะ Terraform ต้องบันทึก attribute ที่มันตั้งไว้ เหมือนความเสี่ยง plaintext จากบทแรกของโมดูลนี้เป๊ะ สิ่งที่มันแก้ได้จริง ๆ คือ lifecycle ของ secret ตัวนั้นในที่อื่นทั้งหมด — มันไม่เคยถูกพิมพ์ลง variable ไม่เคยอยู่ในไฟล์ `.tfvars` ที่อาจถูก commit เข้าไปโดยไม่ตั้งใจ และการ rotate มันใน Key Vault ก็ไม่ต้องแตะ Terraform configuration เลย การปกป้อง state backend เองยังคงเป็นส่วนที่ต่อรองไม่ได้อยู่ดี
+ต้องมองให้ชัดว่าวิธีนี้แก้อะไรได้และแก้อะไรไม่ได้ ค่า secret ที่ resolve แล้วยังไปจบที่ state entry ของ `azurerm_postgresql_flexible_server.main` อยู่ดี เพราะ Terraform ต้องบันทึก attribute ที่ตั้งไว้ เหมือนความเสี่ยง plaintext จากบทแรกของโมดูลนี้เป๊ะ สิ่งที่แก้ได้จริง ๆ คือ lifecycle ของ secret ตัวนั้นในที่อื่นทั้งหมด — ไม่เคยถูกพิมพ์ลง variable ไม่เคยอยู่ในไฟล์ `.tfvars` ที่อาจถูก commit เข้าไปโดยไม่ตั้งใจ และการ rotate ใน Key Vault ก็ไม่ต้องแตะ Terraform configuration เลย การปกป้อง state backend เองยังคงเป็นส่วนที่ต่อรองไม่ได้อยู่ดี
 
 ## จุดที่ shared state เริ่มไม่พอ
 
 บทก่อนหน้าตั้ง azurerm backend ที่มี locking ติดมาในตัว ซึ่งแก้ปัญหา "ทุกคนอ่านและเขียน state เดียวกันได้อย่างปลอดภัย" ได้แล้ว นั่นจำเป็น แต่ไม่พอเมื่อทีมโตเกินกว่าวิศวกรสองสามคน ถ้าไม่มีอะไรเพิ่มเติมนอกจากนั้น "ทุกคนรัน `terraform apply` จาก laptop ของตัวเองเมื่อไหร่ก็ได้ที่อยากรัน" ก็ยังมีช่องโหว่จริงอยู่
 
-- `apply` ที่รันพร้อมกันจะไม่ทำให้อะไรเสียหายอีกต่อไปเพราะมี locking แล้ว แต่มันก็ยังต้องต่อคิวกัน — run ของวิศวกรคนที่สองก็แค่รอเฉย ๆ โดยไม่รู้เลยว่า run แรกกำลังทำอะไรอยู่ หรือจะใช้เวลานานแค่ไหน
-- ไม่มีจุดไหนที่คนที่สอง review การเปลี่ยนแปลงก่อนมันขึ้น production จริง locking ป้องกันแค่ไม่ให้สอง apply แข่งกันเขียนพร้อมกัน มันไม่ได้หยุดวิศวกรคนหนึ่งจาก apply การเปลี่ยนแปลงที่ไม่มีใครดูมาก่อนเลย
-- วิศวกรแต่ละคนต้องมี Azure credential ที่ valid และมีสิทธิ์พอจะรัน `apply` จากเครื่องตัวเองได้ ซึ่งเป็น blast radius ที่กว้างกว่าที่ทีมส่วนใหญ่อยากแจกให้ทุก laptop
+- `apply` ที่รันพร้อมกันจะไม่ทำให้อะไรเสียหายอีกต่อไปเพราะมี locking แล้ว แต่ก็ยังต้องต่อคิวกัน — run ของวิศวกรคนที่สองก็แค่รอเฉย ๆ โดยไม่รู้เลยว่า run แรกกำลังทำอะไรอยู่ หรือจะใช้เวลานานแค่ไหน
+- ไม่มีจุดไหนที่คนที่สอง review การเปลี่ยนแปลงก่อนขึ้น production จริง locking ป้องกันแค่ไม่ให้สอง apply แข่งกันเขียนพร้อมกัน แต่ไม่ได้หยุดวิศวกรคนหนึ่งจาก apply การเปลี่ยนแปลงที่ไม่มีใครดูมาก่อนเลย
+- วิศวกรแต่ละคนต้องมี Azure credential ที่ valid และมีสิทธิ์พอจะรัน `apply` จากเครื่องตัวเองได้ นั่นเป็น blast radius ที่กว้างกว่าที่ทีมส่วนใหญ่อยากแจกให้ทุก laptop
 
-ทั้งหมดนี้ไม่ได้แปลว่า shared backend จากบทก่อนหน้าผิด — มันเป็นสิ่งที่ต้องมีก่อน ไม่ใช่ความผิดพลาด แค่มันยังไม่ใช่เรื่องทั้งหมด การปิดช่องว่างนี้คือหน้าที่ของ CI/CD สำหรับ infrastructure โดยตรง — pipeline รัน `plan` กับทุกการเปลี่ยนแปลงที่เสนอมาเพื่อให้ review ก่อนใครจะ apply มัน และ `apply` ก็รันจาก pipeline identity ที่ควบคุมได้ แทนที่จะรันจาก laptop ของแต่ละคน นั่นเป็นหัวข้อของบทหลังในคอร์สนี้ ไม่ใช่สิ่งที่ต้องแก้ตรงนี้ — ประเด็นตอนนี้คือแค่ให้รู้จักรูปร่างของช่องว่างนี้ไว้ก่อน จะได้ไม่แปลกใจทีหลัง
+ทั้งหมดนี้ไม่ได้แปลว่า shared backend จากบทก่อนหน้าผิด — เป็นสิ่งที่ต้องมีก่อน ไม่ใช่ความผิดพลาด แค่ยังไม่ใช่เรื่องทั้งหมด การปิดช่องว่างนี้คือหน้าที่ของ CI/CD สำหรับ infrastructure โดยตรง — pipeline รัน `plan` กับทุกการเปลี่ยนแปลงที่เสนอมาเพื่อให้ review ก่อนใครจะ apply และ `apply` ก็รันจาก pipeline identity ที่ควบคุมได้ แทนที่จะรันจาก laptop ของแต่ละคน นั่นเป็นหัวข้อของบทหลังในคอร์สนี้ ไม่ใช่สิ่งที่ต้องแก้ตรงนี้ — ประเด็นตอนนี้คือแค่ให้รู้จักรูปร่างของช่องว่างนี้ไว้ก่อน จะได้ไม่แปลกใจทีหลัง
 
 <Mermaid title="A sensitive variable is redacted from CLI output but still lands in state as plaintext, versus a secret pulled from Key Vault at apply time" code={sensitiveDataDiagram} />
 
@@ -96,25 +96,25 @@ export const sensitiveDataDiagram = `flowchart LR
   res -->|attribute recorded| state`;
 
 <Callout title="สรุปหนึ่งบรรทัด">
-`sensitive = true` บน `variable` หรือ `output` แค่ปิดบังค่านั้นจาก **CLI output** อย่าง `plan`, `apply` และ `terraform output` เท่านั้น — มัน **ไม่** เข้ารหัสอะไรเลย และค่าเต็มก็ยังถูกเขียนลง `terraform.tfstate` แบบ plaintext อยู่ดีไม่ว่าจะตั้งค่านี้หรือไม่ก็ตาม การป้องกันจริง ๆ สำหรับ sensitive data อยู่ที่ storage layer Azure Storage **เข้ารหัส state ที่ rest ให้อยู่แล้วโดย default** ดังนั้นส่วนที่คุณต้องควบคุมเองจริง ๆ คือ **จำกัดสิทธิ์อ่าน** ด้วย Azure RBAC โดยปฏิบัติกับ state file เองเหมือนเป็น secret ถ้าเป็นไปได้ ให้เลี่ยง secret ที่อยู่ยาวนานใน Terraform variable ไปเลย แล้วดึงมันจาก Azure Key Vault ผ่าน `data` source ตอน apply แทน แม้จะมี azurerm backend แบบ shared และ locked แล้ว ทีมที่พึ่งพาแค่ทุกคน apply จาก laptop ของตัวเองก็ยังขาดการมองเห็น concurrency และการ review ก่อน apply — ช่องว่างที่ CI/CD สำหรับ infrastructure จะมาปิดทีหลังในคอร์สนี้
+`sensitive = true` บน `variable` หรือ `output` แค่ปิดบังค่านั้นจาก **CLI output** อย่าง `plan`, `apply` และ `terraform output` เท่านั้น — **ไม่ได้** เข้ารหัสอะไรเลย และค่าเต็มก็ยังไปอยู่ใน `terraform.tfstate` แบบ plaintext อยู่ดีไม่ว่าจะตั้งค่านี้หรือไม่ก็ตาม การป้องกันจริง ๆ สำหรับ sensitive data อยู่ที่ storage layer Azure Storage **เข้ารหัส state ที่ rest ให้อยู่แล้วโดย default** ดังนั้นส่วนที่คุณต้องควบคุมเองจริง ๆ คือ **จำกัดสิทธิ์อ่าน** ด้วย Azure RBAC โดยปฏิบัติกับ state file เองเหมือนเป็น secret ถ้าเป็นไปได้ ให้เลี่ยง secret ที่อยู่ยาวนานใน Terraform variable ไปเลย แล้วดึงค่าจาก Azure Key Vault ผ่าน `data` source ตอน apply แทน แม้จะมี azurerm backend แบบ shared และ locked แล้ว ทีมที่พึ่งพาแค่ทุกคน apply จาก laptop ของตัวเองก็ยังขาดการมองเห็น concurrency และการ review ก่อน apply — ช่องว่างที่ CI/CD สำหรับ infrastructure จะมาปิดทีหลังในคอร์สนี้
 </Callout>
 
 export const quizSensitiveWorkflows = [
   {
     q: 'การตั้ง sensitive = true บน Terraform variable ป้องกันอะไรจริง ๆ',
     options: [
-      'มันเข้ารหัสค่านั้นทุกที่ที่ Terraform เก็บหรือส่งค่านั้น',
-      'มันปิดบังค่านั้นจาก CLI output อย่าง plan, apply และ terraform output แต่ไม่เปลี่ยนวิธีที่ค่านั้นถูกเก็บ',
-      'มันป้องกันไม่ให้ค่านั้นถูกเขียนลง state file เลย',
-      'มันหมุนเวียน (rotate) ค่านั้นให้อัตโนมัติตามตารางเวลา',
+      'เข้ารหัสค่านั้นทุกที่ที่ Terraform เก็บหรือส่งค่านั้น',
+      'ปิดบังค่านั้นจาก CLI output อย่าง plan, apply และ terraform output แต่ไม่เปลี่ยนวิธีที่ค่านั้นถูกเก็บ',
+      'ป้องกันไม่ให้ค่านั้นไปอยู่ใน state file เลย',
+      'หมุนเวียน (rotate) ค่านั้นให้อัตโนมัติตามตารางเวลา',
     ],
     answer: 1,
   },
   {
-    q: 'database password ถูกตั้งเป็น sensitive = true บน variable block ของมัน มันยังอ่านเป็น plaintext ได้จากที่ไหนอีกไหม',
+    q: 'database password ถูกตั้งเป็น sensitive = true บน variable block ของตัวเอง ค่านั้นยังอ่านเป็น plaintext ได้จากที่ไหนอีกไหม',
     options: [
       'ไม่ได้ ค่า sensitive จะไม่ถูกเก็บไว้ที่ไหนเลยหลังถูกตั้งค่านี้',
-      'ได้ มันยังถูกเขียนลง terraform.tfstate แบบ plaintext เหมือนกับที่ไม่ได้ตั้ง sensitive ไว้เป๊ะ',
+      'ได้ ค่ายังไปอยู่ใน terraform.tfstate แบบ plaintext เหมือนกับที่ไม่ได้ตั้ง sensitive ไว้เป๊ะ',
       'ได้เฉพาะตอนที่ใส่ flag -sensitive เพิ่มตอน apply เท่านั้น',
       'ไม่ได้ Terraform เข้ารหัสค่าที่ถูกตั้ง sensitive ให้อัตโนมัติก่อนเขียนลง state',
     ],
@@ -131,11 +131,11 @@ export const quizSensitiveWorkflows = [
     answer: 1,
   },
   {
-    q: 'ทำไมการดึง secret จาก Azure Key Vault ผ่าน data source มักจะดีกว่าการเก็บมันเป็น Terraform variable สำหรับ credential ที่อยู่ยาวนาน',
+    q: 'ทำไมการดึง secret จาก Azure Key Vault ผ่าน data source มักจะดีกว่าการเก็บเป็น Terraform variable สำหรับ credential ที่อยู่ยาวนาน',
     options: [
-      'มันเก็บ secret ให้อยู่นอกไฟล์ .tf และ .tfvars และนอก workflow การ rotate แม้ว่าค่าที่ resolve แล้วก็ยังไปจบที่ resource attribute ที่ถูกบันทึกใน state อยู่ดี',
-      'มันป้องกันไม่ให้ secret ปรากฏใน state file เลยแม้แต่นิดเดียว',
-      'มันตัดความจำเป็นในการจำกัด access ไปที่ state backend',
+      'เก็บ secret ให้อยู่นอกไฟล์ .tf และ .tfvars และนอก workflow การ rotate แม้ว่าค่าที่ resolve แล้วก็ยังไปจบที่ resource attribute ที่ถูกบันทึกใน state อยู่ดี',
+      'ป้องกันไม่ให้ secret ปรากฏใน state file เลยแม้แต่นิดเดียว',
+      'ตัดความจำเป็นในการจำกัด access ไปที่ state backend',
       'data source ใช้กับค่า sensitive ไม่ได้ เลยเลี่ยงปัญหานี้ไปโดยสิ้นเชิง',
     ],
     answer: 0,

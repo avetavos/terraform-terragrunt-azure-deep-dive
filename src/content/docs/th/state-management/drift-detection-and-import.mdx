@@ -1,6 +1,6 @@
 ---
 title: 'Drift Detection and Import'
-description: 'Terraform เผยการเปลี่ยนแปลงที่เกิดนอกการควบคุมของมันยังไง และวิธีเอา Azure resource ที่มีอยู่แล้วเข้ามาอยู่ใต้การจัดการของ Terraform ด้วย import'
+description: 'Terraform เผยการเปลี่ยนแปลงที่เกิดนอกการควบคุมของตัวเองยังไง และวิธีเอา Azure resource ที่มีอยู่แล้วเข้ามาอยู่ใต้การจัดการของ Terraform ด้วย import'
 sidebar:
   order: 3
 ---
@@ -16,7 +16,7 @@ import ProgressTracker from '../../../../components/ProgressTracker.tsx';
 
 ## การตรวจจับ drift
 
-state เป็นแค่ snapshot ที่บันทึกโลกจริง ณ ตอน `apply` ครั้งล่าสุดเท่านั้น ไม่มีอะไรห้ามใครสักคนเปิด Azure Portal แล้วแก้ resource ตรง ๆ — แก้ tag ของ virtual machine, เปลี่ยน tier ของ storage account หรือเปิด rule ของ network security group ด้วยมือ Terraform ไม่มีทางรู้ว่าเกิดอะไรขึ้นจนกว่ามันจะเช็คอีกครั้ง
+state เป็นแค่ snapshot ที่บันทึกโลกจริง ณ ตอน `apply` ครั้งล่าสุดเท่านั้น ไม่มีอะไรห้ามใครสักคนเปิด Azure Portal แล้วแก้ resource ตรง ๆ — แก้ tag ของ virtual machine, เปลี่ยน tier ของ storage account หรือเปิด rule ของ network security group ด้วยมือ Terraform ไม่มีทางรู้ว่าเกิดอะไรขึ้นจนกว่าจะเช็คอีกครั้ง
 
 ```hcl
 resource "azurerm_linux_virtual_machine" "web" {
@@ -36,7 +36,7 @@ resource "azurerm_linux_virtual_machine" "web" {
 }
 ```
 
-สมมติเพื่อนร่วมทีมแก้ tag `environment` ของ VM ตัวนั้นใน Azure Portal เป็น `"staging"` นอกเหนือจากการรัน Terraform ใด ๆ ครั้งถัดไปที่ใครสักคนรัน `terraform plan` Terraform จะ refresh มุมมองของ resource จริง สังเกตว่า tag ไม่ตรงกับ configuration แล้ว แล้วแสดง diff ออกมา — มันเสนอให้เปลี่ยน tag กลับเป็น `"production"` เพราะสำหรับ Terraform แล้ว configuration คือ source of truth และการแก้ใน portal คือ drift ที่ต้องแก้กลับ
+สมมติเพื่อนร่วมทีมแก้ tag `environment` ของ VM ตัวนั้นใน Azure Portal เป็น `"staging"` นอกเหนือจากการรัน Terraform ใด ๆ ครั้งถัดไปที่ใครสักคนรัน `terraform plan` Terraform จะ refresh มุมมองของ resource จริง สังเกตว่า tag ไม่ตรงกับ configuration แล้ว แล้วแสดง diff ออกมา — โดยเสนอให้เปลี่ยน tag กลับเป็น `"production"` เพราะสำหรับ Terraform แล้ว configuration คือ source of truth และการแก้ใน portal คือ drift ที่ต้องแก้กลับ
 
 ```bash
 terraform plan
@@ -54,17 +54,17 @@ terraform plan
 terraform apply -refresh-only
 ```
 
-โหมดนี้ refresh state จาก Azure resource จริง แล้วแสดงว่าอะไรเปลี่ยนไปบ้าง จากนั้นถามให้คุณ confirm การเขียนการเปลี่ยนแปลงนั้นลง `terraform.tfstate` — แต่มันไม่แก้ Azure จริงเลย นี่คือเครื่องมือที่ถูกต้องเวลา drift นั้นตั้งใจให้เกิด แล้วคุณตัดสินใจแล้วว่าให้การเปลี่ยนแปลงใน portal ชนะ หรือตอนที่คุณต้อง update mental model ว่า state ตอนนี้เก็บอะไรอยู่ ก่อนตัดสินใจว่าจะแก้ configuration หรือยอมรับความเป็นจริง
+โหมดนี้ refresh state จาก Azure resource จริง แล้วแสดงว่าอะไรเปลี่ยนไปบ้าง จากนั้นถามให้คุณ confirm การเขียนการเปลี่ยนแปลงนั้นลง `terraform.tfstate` — แต่ไม่แก้ Azure จริงเลย นี่คือเครื่องมือที่ถูกต้องเวลา drift นั้นตั้งใจให้เกิด แล้วคุณตัดสินใจแล้วว่าให้การเปลี่ยนแปลงใน portal ชนะ หรือตอนที่คุณต้อง update mental model ว่า state ตอนนี้เก็บอะไรอยู่ ก่อนตัดสินใจว่าจะแก้ configuration หรือยอมรับความเป็นจริง
 
 ## เอา resource ที่มีอยู่แล้วเข้ามาอยู่ใต้การจัดการด้วย import
 
-drift สมมติว่า Terraform จัดการ resource นั้นอยู่แล้ว แต่มีอีกปัญหาหนึ่งที่เกี่ยวข้องกัน คือ resource ที่มีอยู่จริงใน Azure แต่ไม่เคยถูกสร้างโดย Terraform เลย — อาจมีมาก่อนที่ทีมจะเริ่มใช้ Terraform หรือมีใครสักคนคลิกสร้างมันขึ้นมาใน portal ระหว่างเหตุการณ์ฉุกเฉิน `terraform import` คือคำสั่ง CLI ที่ผูก resource จริงตัวนั้นเข้ากับ resource address ใน configuration ของคุณ
+drift สมมติว่า Terraform จัดการ resource นั้นอยู่แล้ว แต่มีอีกปัญหาหนึ่งที่เกี่ยวข้องกัน คือ resource ที่มีอยู่จริงใน Azure แต่ไม่เคยถูกสร้างโดย Terraform เลย — อาจมีมาก่อนที่ทีมจะเริ่มใช้ Terraform หรือมีใครสักคนคลิกสร้างขึ้นมาใน portal ระหว่างเหตุการณ์ฉุกเฉิน `terraform import` คือคำสั่ง CLI ที่ผูก resource จริงตัวนั้นเข้ากับ resource address ใน configuration ของคุณ
 
 ```bash
 terraform import azurerm_linux_virtual_machine.web /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-resources/providers/Microsoft.Compute/virtualMachines/web-vm
 ```
 
-รันคำสั่งนั้นแล้วจะเขียนแค่ state entry เท่านั้น — มันแมป `azurerm_linux_virtual_machine.web` เข้ากับ resource ID จริง แล้วดึง attribute ปัจจุบันทั้งหมดของ VM ตัวนั้นเข้ามา มัน **ไม่** เขียน `resource "azurerm_linux_virtual_machine" "web" { ... }` block ที่ตรงกันให้คุณ คุณยังต้อง hand-write HCL ที่ตรงกับ attribute ของ resource จริงมากพอ ให้ `plan` ครั้งถัดไปออกมาสะอาด ถ้า configuration ของคุณไม่ตรงกับความเป็นจริงหลัง import แล้ว `plan` จะแสดง diff แบบเดียวกับที่ drift สร้างขึ้น และคุณต้องปรับ HCL — ไม่ใช่ resource จริง — จนกว่ามันจะตรงกัน
+รันคำสั่งนั้นแล้วจะเขียนแค่ state entry เท่านั้น — โดยแมป `azurerm_linux_virtual_machine.web` เข้ากับ resource ID จริง แล้วดึง attribute ปัจจุบันทั้งหมดของ VM ตัวนั้นเข้ามา คำสั่งนี้ **ไม่** เขียน `resource "azurerm_linux_virtual_machine" "web" { ... }` block ที่ตรงกันให้คุณ คุณยังต้อง hand-write HCL ที่ตรงกับ attribute ของ resource จริงมากพอ ให้ `plan` ครั้งถัดไปออกมาสะอาด ถ้า configuration ของคุณไม่ตรงกับความเป็นจริงหลัง import แล้ว `plan` จะแสดง diff แบบเดียวกับที่ drift สร้างขึ้น และคุณต้องปรับ HCL — ไม่ใช่ resource จริง — จนกว่าจะตรงกัน
 
 ## Import block แบบ declarative
 
@@ -77,7 +77,7 @@ import {
 }
 ```
 
-มันทำงานแบบเดียวกับ `terraform import` ข้างใน แต่ต่างกันตรง workflow ที่สำคัญ คำสั่ง CLI ทำงานทันทีและแก้ state ณ ตอนที่คุณเรียกมันเลย — ไม่มี preview และไม่มีอะไรให้ review ก่อนมันเกิดขึ้น ส่วน `import` block เป็นแค่ configuration — มันจะโผล่มาเป็น planned action ในครั้งถัดไปที่คุณรัน `terraform plan` พร้อมกับการเปลี่ยนแปลงอื่น ๆ ก่อนที่อะไรจะเกิดขึ้นจริง
+ข้างในทำงานแบบเดียวกับ `terraform import` แต่ต่างกันตรง workflow ที่สำคัญ คำสั่ง CLI ทำงานทันทีและแก้ state ณ ตอนที่คุณเรียกเลย — ไม่มี preview และไม่มีอะไรให้ review ก่อนเกิดขึ้น ส่วน `import` block เป็นแค่ configuration ที่จะโผล่มาเป็น planned action ในครั้งถัดไปที่คุณรัน `terraform plan` พร้อมกับการเปลี่ยนแปลงอื่น ๆ ก่อนที่อะไรจะเกิดขึ้นจริง
 
 ```bash
 terraform plan
@@ -92,7 +92,7 @@ terraform plan
 #     }
 ```
 
-นั่นทำให้ `import` block เป็นวิธีที่ควรเลือกใช้เมื่อทำได้ — มัน plannable, review ได้ใน pull request เหมือน configuration change อื่น ๆ และรันซ้ำข้าม environment ได้ แทนที่จะเป็น side effect ที่เกิดทันทีซึ่งต้องมีใครสักคนจำไว้ว่าต้องรันมือบนทุกเครื่องที่ต้องการมัน คุณยังต้องเขียน `resource` block ที่ตรงกันเองอยู่ดีไม่ว่าจะใช้วิธีไหน — block นี้แค่บอก Terraform ว่า object จริงตัวไหนต้องผูกกับ address ตัวไหน
+นั่นทำให้ `import` block เป็นวิธีที่ควรเลือกใช้เมื่อทำได้ — เพราะ plannable, review ได้ใน pull request เหมือน configuration change อื่น ๆ และรันซ้ำข้าม environment ได้ แทนที่จะเป็น side effect ที่เกิดทันทีซึ่งต้องมีใครสักคนจำไว้ว่าต้องรันมือบนทุกเครื่องที่ต้องใช้ คุณยังต้องเขียน `resource` block ที่ตรงกันเองอยู่ดีไม่ว่าจะใช้วิธีไหน — block นี้แค่บอก Terraform ว่า object จริงตัวไหนต้องผูกกับ address ตัวไหน
 
 ## จัดระเบียบ state โดยไม่แตะ infrastructure จริง
 
@@ -106,7 +106,7 @@ terraform state mv azurerm_linux_virtual_machine.web module.compute.azurerm_linu
 terraform state rm azurerm_linux_virtual_machine.web
 ```
 
-`terraform state mv` คือสิ่งที่คุณใช้เวลาปรับโครงสร้าง configuration ใหม่ — เช่นย้าย resource เข้าไปใน module — แล้วไม่อยากให้ Terraform มองว่าเป็น "ลบตัวเก่า สร้างตัวใหม่" มันแค่ update address ใน state ให้ตรงกับตำแหน่งใหม่ใน HCL ของคุณ และ resource จริงบน Azure ไม่ถูกแตะเลย `terraform state rm` คือทิศทางตรงข้ามกับ `import` มันลบ entry ของ resource ออกจาก state ทำให้ Terraform ลืมมันไปเลย แต่ object จริงบน Azure ก็ยังทำงานต่อไปเหมือนเดิม มีประโยชน์เวลาคุณอยากส่งต่อ resource ให้ Terraform configuration อื่นจัดการ หรือตั้งใจหยุดจัดการบางอย่างโดยไม่ลบมันทิ้ง
+`terraform state mv` คือสิ่งที่คุณใช้เวลาปรับโครงสร้าง configuration ใหม่ — เช่นย้าย resource เข้าไปใน module — แล้วไม่อยากให้ Terraform มองว่าเป็น "ลบตัวเก่า สร้างตัวใหม่" แค่ update address ใน state ให้ตรงกับตำแหน่งใหม่ใน HCL ของคุณ และ resource จริงบน Azure ไม่ถูกแตะเลย `terraform state rm` คือทิศทางตรงข้ามกับ `import` โดยลบ entry ของ resource ออกจาก state ทำให้ Terraform ลืมไปเลย แต่ object จริงบน Azure ก็ยังทำงานต่อไปเหมือนเดิม มีประโยชน์เวลาคุณอยากส่งต่อ resource ให้ Terraform configuration อื่นจัดการ หรือตั้งใจหยุดจัดการบางอย่างโดยไม่ลบทิ้ง
 
 <Mermaid title="A manual portal edit is caught as drift by plan, while an existing untracked resource is brought in via import" code={driftImportDiagram} />
 
@@ -117,7 +117,7 @@ export const driftImportDiagram = `flowchart LR
   state -->|next plan| clean["plan shows no diff, if config matches"]`;
 
 <Callout title="สรุปหนึ่งบรรทัด">
-**configuration drift** คือช่องว่างใด ๆ ระหว่าง Terraform configuration กับสถานะจริงของ Azure ที่เกิดจากการเปลี่ยนแปลงนอก Terraform — `terraform plan` เผยมันออกมาเป็น diff และ `terraform apply -refresh-only` ทำให้คุณ update state ที่ Terraform บันทึกไว้ให้ตรงกับความเป็นจริง โดยไม่แตะ infrastructure จริงเลย **`terraform import`** (คำสั่ง CLI) ผูก resource จริงที่สร้างมือไว้แล้วเข้ากับ resource address ที่คุณเขียนไว้ใน config แล้ว แต่มันแค่เติม state entry เท่านั้น — คุณยัง hand-write `resource` block ที่ตรงกันเอง ส่วน **`import` block** (Terraform 1.5+) ที่ใหม่กว่าทำงานเดียวกันแบบ declarative ในไฟล์ `.tf` และมักถูกเลือกใช้มากกว่าเมื่อทำได้ เพราะ plannable และ review ได้ใน `terraform plan` ก่อนมันจะเกิดขึ้นจริง ต่างจาก CLI ที่เป็น side effect ทันทีที่ไม่ผ่านการ review `terraform state mv` กับ `terraform state rm` จัดระเบียบหรือหยุด track resource ใน state โดยไม่แตะ infrastructure จริงเลย
+**configuration drift** คือช่องว่างใด ๆ ระหว่าง Terraform configuration กับสถานะจริงของ Azure ที่เกิดจากการเปลี่ยนแปลงนอก Terraform — `terraform plan` เผยออกมาเป็น diff และ `terraform apply -refresh-only` ทำให้คุณ update state ที่ Terraform บันทึกไว้ให้ตรงกับความเป็นจริง โดยไม่แตะ infrastructure จริงเลย **`terraform import`** (คำสั่ง CLI) ผูก resource จริงที่สร้างมือไว้แล้วเข้ากับ resource address ที่คุณเขียนไว้ใน config แล้ว แต่แค่เติม state entry เท่านั้น — คุณยัง hand-write `resource` block ที่ตรงกันเอง ส่วน **`import` block** (Terraform 1.5+) ที่ใหม่กว่าทำงานเดียวกันแบบ declarative ในไฟล์ `.tf` และมักถูกเลือกใช้มากกว่าเมื่อทำได้ เพราะ plannable และ review ได้ใน `terraform plan` ก่อนจะเกิดขึ้นจริง ต่างจาก CLI ที่เป็น side effect ทันทีที่ไม่ผ่านการ review `terraform state mv` กับ `terraform state rm` จัดระเบียบหรือหยุด track resource ใน state โดยไม่แตะ infrastructure จริงเลย
 </Callout>
 
 export const quizDriftImport = [
@@ -152,10 +152,10 @@ export const quizDriftImport = [
     answer: 1,
   },
   {
-    q: 'terraform state rm ทำอะไรกับ Azure resource จริงที่มันเคย track อยู่',
+    q: 'terraform state rm ทำอะไรกับ Azure resource จริงที่เคย track อยู่',
     options: [
       'ลบ resource จริงใน Azure ทิ้ง',
-      'ไม่มีอะไรเลย มันแค่ลบ entry ของ resource ออกจาก state ทำให้ Terraform เลิก track และ object จริงยังทำงานต่อเหมือนเดิม',
+      'ไม่มีอะไรเลย แค่ลบ entry ของ resource ออกจาก state ทำให้ Terraform เลิก track และ object จริงยังทำงานต่อเหมือนเดิม',
       'หยุด resource นั้นแต่ไม่ลบทิ้ง',
       'export configuration ของ resource ไปเป็นไฟล์ .tf ใหม่ให้อัตโนมัติ',
     ],
