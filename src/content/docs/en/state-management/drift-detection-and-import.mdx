@@ -108,6 +108,22 @@ terraform state rm azurerm_linux_virtual_machine.web
 
 `terraform state mv` is what you reach for when you restructure your configuration — say, moving a resource into a module — and do not want Terraform to see that as "destroy the old one, create a new one." It updates the address in state to match the new location in your HCL, and the real Azure resource is never touched. `terraform state rm` is the opposite direction of `import`: it deletes a resource's entry from state so Terraform forgets about it entirely, but the real object in Azure keeps running exactly as it was. That is useful when you want to hand a resource off to a different Terraform configuration, or deliberately stop managing something without deleting it.
 
+### The declarative version: the removed block
+
+`terraform state rm` carries the same drawback the plain `terraform import` command does — it is an immediate, unreviewed CLI side effect with no plan step in front of it. Terraform 1.7 added the declarative counterpart, the `removed` block, which is to `state rm` what the `import` block is to `terraform import`:
+
+```hcl
+removed {
+  from = azurerm_linux_virtual_machine.web
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+Delete the `resource` block from your configuration, add this `removed` block in its place, and the next `terraform plan` shows the removal for review before anything happens. The `lifecycle` argument is the part that matters: `destroy = false` tells Terraform to forget the resource while leaving the real VM running, exactly like `state rm`. The default is `destroy = true`, which forgets the resource **and** destroys it — so omitting that `lifecycle` block silently turns a hand-off into a deletion. Once the apply succeeds you can delete the `removed` block as well; it has done its job.
+
 <Mermaid title="A manual portal edit is caught as drift by plan, while an existing untracked resource is brought in via import" code={driftImportDiagram} />
 
 export const driftImportDiagram = `flowchart LR
