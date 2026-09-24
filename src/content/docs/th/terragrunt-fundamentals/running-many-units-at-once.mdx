@@ -23,7 +23,7 @@ terragrunt run --all plan
 terragrunt run --all apply
 ```
 
-ต้องระวังผลการค้นหาและ tutorial เก่า ๆ ในเรื่องนี้เป็นพิเศษ เพราะโมดูลนี้เป็นจุดที่ข้อมูลล้าสมัยได้เร็วมาก `terragrunt run-all plan` และ `terragrunt run-all apply` คือ syntax เก่าและถูก deprecated ไปแล้ว เพื่อให้ใช้ `run --all` แทน ที่เก่ากว่านั้นอีก `terragrunt plan-all` กับ `terragrunt apply-all` ไม่ใช่แค่ deprecated แต่ถูกลบทิ้งไปทั้งหมดแล้ว และจะ fail ทันทีบน Terragrunt เวอร์ชันปัจจุบัน ถ้า guide ที่กำลังอ่านอยู่บอกให้รัน `apply-all` ให้ถือว่านั่นเป็นสัญญาณว่าเนื้อหาที่เหลือของ guide นั้นอาจล้าสมัยไปด้วย
+ต้องระวังผลการค้นหาและ tutorial เก่า ๆ ในเรื่องนี้เป็นพิเศษ เพราะโมดูลนี้เป็นจุดที่ข้อมูลล้าสมัยได้เร็วมาก `terragrunt run-all plan` และ `terragrunt run-all apply` คือ syntax เก่าและถูกลบทิ้งไปแล้วเช่นกัน — บน Terragrunt 1.1 จะ fail ด้วย `unknown command` เหมือนกับ `terragrunt plan-all` กับ `terragrunt apply-all` ที่เก่ากว่านั้นอีก มีแค่ `run --all` เท่านั้นที่ใช้ได้บนเวอร์ชันปัจจุบัน ถ้า guide ที่กำลังอ่านอยู่บอกให้รัน `apply-all` ให้ถือว่านั่นเป็นสัญญาณว่าเนื้อหาที่เหลือของ guide นั้นอาจล้าสมัยไปด้วย
 
 ## จำกัดขอบเขตด้วย --filter
 
@@ -75,7 +75,7 @@ export const runAllDiagram = `flowchart LR
   vm --> hook["after_hook notify_slack"]`;
 
 <Callout title="สรุปในหนึ่งบรรทัด">
-`terragrunt run --all plan` และ `terragrunt run --all apply` คือ command ปัจจุบันสำหรับรันทุก unit ที่อยู่ใต้ directory หนึ่ง มาแทน syntax เก่า `terragrunt run-all <command>` ที่ถูก deprecated ไปแล้ว ส่วน `terragrunt plan-all` และ `terragrunt apply-all` แบบเก่ากว่านั้นถูกลบทิ้งไปเลย และจะ fail ถ้าลองรันดู **--filter** เช่นใน `terragrunt run --all --filter './subscription-a/**' -- plan` จำกัดขอบเขตการรันให้เหลือแค่บาง unit มาแทน flag เก่าอย่าง `--queue-include-dir`/`--queue-exclude-dir` ส่วน **--non-interactive** มาแทน `--terragrunt-non-interactive` สำหรับการรันแบบไม่มีคนคอย confirm ใน CI **before_hook** และ **after_hook** block ใน `terraform` block ของ unit รัน shell command ใด ๆ ก็ได้ ก่อนหรือหลัง operation หนึ่งบน unit นั้น เช่น validation script หรือการแจ้งเตือน Slack ส่วนลำดับที่ unit ต่าง ๆ ถูกประมวลผลจริงระหว่าง `run --all apply` ไม่เคยเป็นสิ่งที่ต้องระบุด้วยมือเลย เพราะมาจาก dependency graph ที่สร้างจากทุก `dependency` block ทั่วทั้ง tree ตามที่บทก่อนหน้ากล่าวไว้
+`terragrunt run --all plan` และ `terragrunt run --all apply` คือ command ปัจจุบันสำหรับรันทุก unit ที่อยู่ใต้ directory หนึ่ง มาแทน syntax เก่า `terragrunt run-all <command>` ที่ถูกลบทิ้งไปแล้ว รวมถึง `terragrunt plan-all` และ `terragrunt apply-all` ที่เก่ากว่านั้น ซึ่งตอนนี้ทั้งหมด fail ด้วย `unknown command` **--filter** เช่นใน `terragrunt run --all --filter './subscription-a/**' -- plan` จำกัดขอบเขตการรันให้เหลือแค่บาง unit มาแทน flag เก่าอย่าง `--queue-include-dir`/`--queue-exclude-dir` ส่วน **--non-interactive** มาแทน `--terragrunt-non-interactive` สำหรับการรันแบบไม่มีคนคอย confirm ใน CI **before_hook** และ **after_hook** block ใน `terraform` block ของ unit รัน shell command ใด ๆ ก็ได้ ก่อนหรือหลัง operation หนึ่งบน unit นั้น เช่น validation script หรือการแจ้งเตือน Slack ส่วนลำดับที่ unit ต่าง ๆ ถูกประมวลผลจริงระหว่าง `run --all apply` ไม่เคยเป็นสิ่งที่ต้องระบุด้วยมือเลย เพราะมาจาก dependency graph ที่สร้างจากทุก `dependency` block ทั่วทั้ง tree ตามที่บทก่อนหน้ากล่าวไว้
 </Callout>
 
 export const quizRunAll = [
@@ -92,8 +92,8 @@ export const quizRunAll = [
   {
     q: 'plan-all และ apply-all เกิดอะไรขึ้น และ run-all เกิดอะไรขึ้น',
     options: [
-      'plan-all และ apply-all ยังทำงานเหมือน run --all ทุกอย่าง ส่วน run-all แค่เปลี่ยนชื่อโดยพฤติกรรมเดิม',
-      'plan-all และ apply-all ถูกลบทิ้งไปทั้งหมดและใช้ไม่ได้อีกแล้ว ส่วน run-all ยังใช้ได้แต่ถูก deprecated เพื่อให้ใช้ run --all แทน',
+      'plan-all และ apply-all ถูกลบไปแล้ว แต่ run-all ยังใช้ได้ แค่ถูก deprecated เพื่อให้ใช้ run --all แทน',
+      'plan-all, apply-all และ run-all ถูกลบทิ้งทั้งหมดและ fail ด้วย unknown command ส่วน run --all คือตัวแทน',
       'ทั้งสาม command ถูกลบทิ้งไปโดยไม่มีตัวแทน',
       'plan-all และ apply-all คือ command ที่แนะนำในปัจจุบัน และ run --all คือตัวที่ถูก deprecated',
     ],
