@@ -53,7 +53,7 @@ terraform {
 }
 ```
 
-`source` is the provider's registry address (`hashicorp/azurerm` resolves to the official Azure provider on the Terraform Registry), and `version` is a constraint, not a pin — `~> 4.0` allows any `4.x` release.
+`source` is the provider's registry address (`hashicorp/azurerm` resolves to the official Azure provider on the Terraform Registry), and `version` is a constraint, not a pin — `~> 5.0` allows any `5.x` release.
 
 The `provider` block then configures one instance of a provider you declared above. For `azurerm`, this is where the subscription lives — and it has a well-known quirk worth calling out explicitly: the `features {}` block is **required**, even when it is empty. Leaving it out entirely is one of the most common first errors newcomers hit with this provider.
 

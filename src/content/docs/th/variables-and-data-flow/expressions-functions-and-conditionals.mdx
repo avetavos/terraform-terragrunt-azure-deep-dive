@@ -32,8 +32,8 @@ locals {
   subnet_db_cidr  = cidrsubnet(var.vnet_address_space, 8, 2) # 10.0.2.0/24
 
   # format() builds a name from a template; join() flattens a list into a string
-  name_prefix   = format("%s-%s", var.environment, var.project)
-  dns_servers   = join(",", ["10.0.0.4", "10.0.0.5"])
+  name_prefix = format("%s-%s", var.environment, var.project)
+  dns_servers = join(",", ["10.0.0.4", "10.0.0.5"])
 
   # merge() combines maps, later arguments winning on key conflicts
   vm_tags = merge(

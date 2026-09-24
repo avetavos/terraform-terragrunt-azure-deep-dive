@@ -33,8 +33,8 @@ terraform {
   backend "azurerm" {
     resource_group_name  = "tfstate-rg"
     storage_account_name = "acmetfstate001"
-    container_name        = "tfstate"
-    key                    = "networking.terraform.tfstate"
+    container_name       = "tfstate"
+    key                  = "networking.terraform.tfstate"
   }
 }
 ```

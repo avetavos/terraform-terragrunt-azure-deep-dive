@@ -53,7 +53,7 @@ terraform {
 }
 ```
 
-`source` คือ registry address ของ provider (`hashicorp/azurerm` ชี้ไปที่ Azure provider ตัวจริงบน Terraform Registry) ส่วน `version` เป็น constraint ไม่ใช่การ pin ตายตัว — `~> 4.0` อนุญาตทุก release ในสาย `4.x`
+`source` คือ registry address ของ provider (`hashicorp/azurerm` ชี้ไปที่ Azure provider ตัวจริงบน Terraform Registry) ส่วน `version` เป็น constraint ไม่ใช่การ pin ตายตัว — `~> 5.0` อนุญาตทุก release ในสาย `5.x`
 
 จากนั้น `provider` block ตั้งค่า instance หนึ่งของ provider ที่ประกาศไว้ด้านบน สำหรับ `azurerm` ตรงนี้คือที่อยู่ของ subscription — และมี quirk ที่รู้กันดีที่ควรพูดถึงตรง ๆ คือ `features {}` block เป็นสิ่งที่**จำเป็นต้องมี** แม้จะว่างเปล่าก็ตาม การไม่ใส่เลยเป็นหนึ่งใน error แรก ๆ ที่คนใหม่มักเจอกับ provider ตัวนี้
 
